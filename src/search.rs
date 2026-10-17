@@ -10,8 +10,7 @@ use regex::bytes::{Regex, RegexBuilder};
 use rusqlite::params_from_iter;
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
-    io::{BufRead, BufReader},
+    io::BufRead,
     path::Path,
 };
 
@@ -94,8 +93,7 @@ fn file_matches(ctx: &Context, harness: &str, path: &Path, patterns: &[Regex]) -
     }
 }
 fn file_matches_inner(path: &Path, patterns: &[Regex]) -> std::io::Result<bool> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::with_capacity(128 * 1024, file);
+    let mut reader = crate::storage::jsonl::open(path)?;
     let mut seen = vec![false; patterns.len()];
     let mut remaining = patterns.len();
     let mut line = Vec::new();
@@ -454,6 +452,34 @@ mod tests {
             vec!["one", "three", "two"]
         );
         assert_eq!(ctx.diagnostics.borrow().len(), 1);
+    }
+    #[test]
+    fn content_search_reaches_a_compressed_rollout() {
+        use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+        let ctx = Context::from_env();
+        let temp = tempfile::tempdir().unwrap();
+        let indexed = temp.path().join("rollout-a.jsonl");
+        std::fs::write(
+            temp.path().join("rollout-a.jsonl.zst"),
+            compress_to_vec(
+                &b"{\"t\":\"a needle here\"}\n"[..],
+                CompressionLevel::Fastest,
+            ),
+        )
+        .unwrap();
+        assert!(file_matches(
+            &ctx,
+            "codex",
+            &indexed,
+            &[Regex::new("needle").unwrap()]
+        ));
+        assert!(!file_matches(
+            &ctx,
+            "codex",
+            &indexed,
+            &[Regex::new("absent").unwrap()]
+        ));
+        assert!(ctx.diagnostics.borrow().is_empty());
     }
     #[test]
     fn unreadable_source_reports_partial_coverage_but_no_match_does_not() {

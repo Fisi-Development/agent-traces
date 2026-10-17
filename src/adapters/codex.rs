@@ -81,7 +81,8 @@ impl Codex {
             Value::Null
         };
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
-        let fallback = filename
+        let stem = filename.strip_suffix(".zst").unwrap_or(&filename);
+        let fallback = stem
             .chars()
             .rev()
             .skip(6)
@@ -194,7 +195,7 @@ impl StoreAdapter for Codex {
                         let name = entry.file_name().to_string_lossy();
                         if entry.file_type().is_file()
                             && name.starts_with("rollout-")
-                            && name.ends_with(".jsonl")
+                            && (name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
                             && name[8..].contains(id)
                         {
                             rows.push(Self::from_rollout(ctx, &home, entry.path()));
@@ -231,7 +232,7 @@ impl StoreAdapter for Codex {
         for mut r in self.rows(ctx, &home, "where created_at >= ?", &[json!(start)])? {
             if kids.contains_key(s(&r, "id"))
                 || r["id"] == row["id"]
-                || !Path::new(s(&r, "path")).exists()
+                || !jsonl::exists(Path::new(s(&r, "path")))
             {
                 continue;
             }
@@ -471,6 +472,40 @@ mod database_tests {
         assert_eq!(kids.len(), 1);
         assert_eq!(kids[0]["kind"], "subagent");
         assert_eq!(kids[0]["parent"], "parent");
+    }
+    #[test]
+    fn a_compressed_unindexed_rollout_resolves_and_reads() {
+        use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join(".codex");
+        let day = home.join("sessions/2026/10/01");
+        std::fs::create_dir_all(&day).unwrap();
+        let id = "01a00000-0000-7000-8000-00000000c0de";
+        let body = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/repo\",\"timestamp\":\"2026-10-01T17:41:37Z\"}}}}\n\
+             {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"compressed hello\"}}]}}}}\n"
+        );
+        std::fs::write(
+            day.join(format!("rollout-2026-10-01T10-41-37-{id}.jsonl.zst")),
+            compress_to_vec(body.as_bytes(), CompressionLevel::Fastest),
+        )
+        .unwrap();
+        let mut ctx = Context::from_env();
+        ctx.home = dir.path().into();
+        std::fs::write(home.join("state_5.sqlite"), b"").unwrap();
+        let rows = Codex.resolve(&ctx, &id[..13]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], id);
+        assert_eq!(rows[0]["cwd"], "/repo");
+        let texts = Codex
+            .events(&ctx, &rows[0], None)
+            .unwrap()
+            .map(|e| serde_json::to_string(&e).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            texts.iter().any(|t| t.contains("compressed hello")),
+            "{texts:?}"
+        );
     }
     #[test]
     fn unindexed_rollout_has_legacy_absent_keys() {
