@@ -177,6 +177,8 @@ pub fn show(
             redact(&clip(&e.text, 3000))
         ));
     }
+    // Repeated last: callers that pipe through `tail` still get the path.
+    index.push(format!("\nFull render ({len} chars): {}", path.display()));
     result.stdout = index.join("\n") + "\n";
     Ok(result)
 }
@@ -899,6 +901,9 @@ mod tests {
         assert_eq!(out.artifacts.len(), 1);
         assert!(out.stdout.contains("Turn index:"));
         assert!(out.artifacts[0].1.contains(&"x".repeat(20001)));
+        let last = out.stdout.trim_end().lines().last().unwrap();
+        assert!(last.starts_with("Full render ("), "{last}");
+        assert!(last.ends_with(&out.artifacts[0].0.display().to_string()));
     }
     #[test]
     fn failures_weights_and_correction_excludes_first_prompt() {

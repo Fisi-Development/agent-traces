@@ -242,12 +242,17 @@ impl StoreAdapter for T3 {
             let mut rows = self.merged(ctx, &con)?;
             rows.retain(|r| {
                 s(r, "id").starts_with(id)
+                    || crate::core::bare_thread_id(s(r, "id")).starts_with(id)
                     || ids.contains(s(r, "id"))
                     || s(r, "provider_id").starts_with(id)
             });
             return Ok(rows);
         }
-        let mut rows = self.query_v1(ctx, "and t.thread_id like ?", &[json!(format!("{id}%"))])?;
+        let mut rows = self.query_v1(
+            ctx,
+            "and (t.thread_id like ?1 or substr(t.thread_id,instr(t.thread_id,':')+1) like ?1)",
+            &[json!(format!("{id}%"))],
+        )?;
         rows.extend(
             self.query_v1(
                 ctx,
@@ -738,6 +743,10 @@ INSERT INTO projection_threads VALUES('shadow','V1 shadow',NULL,NULL,'2026-01-01
         assert_eq!(rows[0]["id"], "thread-123");
         assert_eq!(rows[0]["provider_id"], "current");
         assert!(T3.resolve(&f.ctx, "native").unwrap().is_empty());
+        f.thread("mcp:301cb290-5744");
+        let rows = T3.resolve(&f.ctx, "301cb290").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "mcp:301cb290-5744");
     }
 
     #[test]

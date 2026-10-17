@@ -130,10 +130,71 @@ pub fn gather(ctx: &Context, filters: &Filters) -> Result<Vec<Session>> {
     }
     Ok(rows)
 }
+/// This host's short name, lowercased, to check the `@host` of an address.
+fn local_host() -> &'static str {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        std::env::var("AGENT_TRACES_HOST")
+            .ok()
+            .filter(|h| !h.trim().is_empty())
+            .or_else(|| std::env::var("COMPUTERNAME").ok())
+            .or_else(|| {
+                std::process::Command::new("hostname")
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            })
+            .unwrap_or_default()
+            .trim()
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_lowercase()
+    })
+}
+/// Splits the address form Telepathica and Harbor breadcrumbs use,
+/// `harness:id` or `harness:id@host`, into an adapter name and the bare id.
+/// Anything else, including T3's own `mcp:...` ids, passes through whole.
+pub fn split_address(ident: &str) -> Result<(Option<&'static str>, String)> {
+    split_address_on(ident, local_host())
+}
+fn split_address_on(ident: &str, here: &str) -> Result<(Option<&'static str>, String)> {
+    let mut id = ident.trim();
+    let mut only = None;
+    if let Some((name, rest)) = id.split_once(':')
+        && let Some(a) = adapters().into_iter().find(|a| a.name() == name)
+    {
+        only = Some(a.name());
+        id = rest;
+    }
+    if let Some((bare, host)) = id.rsplit_once('@') {
+        let host = host.split('.').next().unwrap_or("").to_lowercase();
+        if !here.is_empty() && host != here {
+            let addr = only.map(|n| format!("{n}:{bare}")).unwrap_or(bare.into());
+            return Err(SelectionError::Invalid(format!(
+                "{} is on {host}, not this host ({here}); run `agent-traces show {addr}` on {host}",
+                ident.trim()
+            ))
+            .into());
+        }
+        id = bare;
+    }
+    Ok((only, id.to_owned()))
+}
+/// A T3 thread id without its `mcp:`, `thread:` or `import:` prefix.
+pub fn bare_thread_id(id: &str) -> &str {
+    match id.split_once(':') {
+        Some((p, rest)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_alphabetic()) => rest,
+        _ => id,
+    }
+}
 pub fn resolve_any(ctx: &Context, ident: &str) -> Result<Vec<Session>> {
     let mut id = ident.trim().to_owned();
+    let mut only = None;
     let path = ctx.expand(&id);
-    if path.exists() {
+    if !path.exists() {
+        (only, id) = split_address(&id)?;
+    } else {
         let base = path.file_name().unwrap_or_default().to_string_lossy();
         if let Some(rest) = base.strip_prefix("agent-") {
             id = rest.split('.').next().unwrap_or("").into();
@@ -153,6 +214,9 @@ pub fn resolve_any(ctx: &Context, ident: &str) -> Result<Vec<Session>> {
     }
     let mut rows = Vec::new();
     for a in adapters() {
+        if only.is_some_and(|n| n != a.name()) {
+            continue;
+        }
         if a.homes(ctx).is_empty() {
             ctx.cover(
                 a.name(),
@@ -180,6 +244,21 @@ pub fn pick_one(ctx: &Context, id: &str, prefer_provider: bool) -> Result<Sessio
     if prefer_provider {
         rows = merge_t3(rows);
     }
+    if rows.len() > 1
+        && let Some(i) = exact_pick(&rows, id, prefer_provider)
+    {
+        let mut row = rows.remove(i);
+        // The rest are T3 threads that once ran this session under an
+        // earlier provider; keep the link when there is just one.
+        if let [t3] = rows.as_slice()
+            && s(t3, "harness") == "t3"
+            && s(&row, "harness") != "t3"
+        {
+            row["t3_thread"] = t3["id"].clone();
+            row["t3_title"] = t3["title"].clone();
+        }
+        return Ok(row);
+    }
     if rows.len() > 1 {
         return Err(SelectionError::Ambiguous(rows).into());
     }
@@ -198,6 +277,39 @@ pub fn pick_one(ctx: &Context, id: &str, prefer_provider: bool) -> Result<Sessio
         }
     }
     Ok(row)
+}
+/// Chooses among several matches when the query names one of them: the T3
+/// thread under `--t3`, otherwise the session whose own id is the full query,
+/// or the one session left once T3 threads that matched only through a
+/// provider they ran earlier are set aside (they are wrappers of it).
+fn exact_pick(rows: &[Session], ident: &str, prefer_provider: bool) -> Option<usize> {
+    let want = split_address(ident).ok()?.1.to_lowercase();
+    let only = |keep: &dyn Fn(&Session) -> bool| {
+        let hits: Vec<_> = (0..rows.len()).filter(|&i| keep(&rows[i])).collect();
+        (hits.len() == 1).then(|| hits[0])
+    };
+    if !prefer_provider && let Some(i) = only(&|r| s(r, "harness") == "t3") {
+        return Some(i);
+    }
+    let exact = only(&|r| {
+        let id = s(r, "id").to_lowercase();
+        id == want || bare_thread_id(&id) == want
+    });
+    if exact.is_some() || !prefer_provider {
+        return exact;
+    }
+    let names_it = |r: &Session| {
+        let id = s(r, "id").to_lowercase();
+        s(r, "harness") != "t3"
+            || id.starts_with(&want)
+            || bare_thread_id(&id).starts_with(&want)
+            || s(r, "provider_id").to_lowercase().starts_with(&want)
+    };
+    let named: Vec<_> = (0..rows.len()).filter(|&i| names_it(&rows[i])).collect();
+    match named.as_slice() {
+        [i] if s(&rows[*i], "harness") != "t3" => Some(*i),
+        _ => None,
+    }
 }
 pub fn scope_summary(ctx: &Context) -> String {
     adapters()
@@ -295,10 +407,14 @@ pub fn ensure_output_path(ctx: &Context, path: &std::path::Path) -> Result<std::
             protected.push(parent.to_path_buf());
         }
     }
-    if protected
-        .iter()
-        .any(|p| physical.starts_with(physical_path(&clean(p))))
-    {
+    // T3 keeps its git worktrees beside its store; those are ordinary
+    // checkouts, not session data.
+    let t3_root = physical_path(&clean(&ctx.home.join(".t3")));
+    let in_worktree = physical.starts_with(t3_root.join("worktrees"));
+    if protected.iter().any(|p| {
+        let root = physical_path(&clean(p));
+        physical.starts_with(&root) && !(in_worktree && root == t3_root)
+    }) {
         bail!(
             "refusing to write inside a session store: {}",
             normalized.display()
@@ -396,6 +512,59 @@ mod safety_tests {
         ctx.protect_source(&external);
         assert!(write_artifacts(&ctx, &[(external.clone(), "destructive".into())]).is_err());
         assert_eq!(std::fs::read_to_string(external).unwrap(), "unchanged");
+    }
+    #[test]
+    fn t3_worktrees_are_writable_but_its_store_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = Context::from_env();
+        ctx.home = temp.path().join("home");
+        let tree = ctx.home.join(".t3").join("worktrees").join("repo");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::create_dir_all(ctx.home.join(".t3").join("userdata")).unwrap();
+        assert!(ensure_output_path(&ctx, &tree.join("notes.md")).is_ok());
+        let store = ctx.home.join(".t3").join("userdata").join("notes.md");
+        assert!(ensure_output_path(&ctx, &store).is_err());
+        assert!(ensure_output_path(&ctx, &ctx.home.join(".t3").join("notes.md")).is_err());
+    }
+    #[test]
+    fn addresses_name_a_harness_and_check_the_host() {
+        let (only, id) =
+            split_address_on("claude:f91f78af@Bouncehouse.local", "bouncehouse").unwrap();
+        assert_eq!((only, id.as_str()), (Some("claude"), "f91f78af"));
+        let (only, id) = split_address_on("t3:mcp:301cb290", "bouncehouse").unwrap();
+        assert_eq!((only, id.as_str()), (Some("t3"), "mcp:301cb290"));
+        let (only, id) = split_address_on("mcp:301cb290", "bouncehouse").unwrap();
+        assert_eq!((only, id.as_str()), (None, "mcp:301cb290"));
+        let err = split_address_on("t3:7b0f5ce8@desktop-o91444g", "bouncehouse").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("run `agent-traces show t3:7b0f5ce8` on desktop-o91444g")
+        );
+        assert_eq!(bare_thread_id("thread:abc"), "abc");
+        assert_eq!(bare_thread_id("f91f78af-f067"), "f91f78af-f067");
+    }
+    #[test]
+    fn a_full_id_picks_its_own_session_over_a_t3_thread_that_once_ran_it() {
+        let id = "f91f78af-f067-475f-b5a9-5ce9db542cea";
+        let rows = vec![
+            serde_json::json!({"harness":"claude","id":id}),
+            serde_json::json!({"harness":"t3","id":"mcp:301cb290","provider":"codex","provider_id":"01a145f9"}),
+        ];
+        assert_eq!(exact_pick(&rows, id, true), Some(0));
+        assert_eq!(exact_pick(&rows, &format!("claude:{id}"), true), Some(0));
+        assert_eq!(exact_pick(&rows, id, false), Some(1));
+        assert_eq!(exact_pick(&rows, "f91f78af", true), Some(0));
+        assert_eq!(exact_pick(&rows, "f91f78af", false), Some(1));
+        let own = vec![
+            serde_json::json!({"harness":"claude","id":"abc123-1"}),
+            serde_json::json!({"harness":"t3","id":"abc123-2"}),
+        ];
+        assert_eq!(exact_pick(&own, "abc123", true), None);
+        let twins = vec![
+            serde_json::json!({"harness":"claude","id":id}),
+            serde_json::json!({"harness":"codex","id":id}),
+        ];
+        assert_eq!(exact_pick(&twins, id, true), None);
     }
     #[test]
     fn artifact_replace_preserves_prior_target_on_rename_failure() {

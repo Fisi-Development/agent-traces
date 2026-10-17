@@ -139,7 +139,10 @@ order. Canonical JSON object key order is not a contract.
   tie break last. Return up to five hits per session, preserving Python
   full-term-message preference and message order for tied scores.
 - resolve: preserve prefix and path resolution, minimum six-character ID
-  prefixes, and known T3/provider merging. Candidates sort by identity.
+  prefixes, and known T3/provider merging. A `harness:id` address limits
+  resolution to that harness; `harness:id@host` is an error naming the host
+  when it is not this one. T3 thread ids also match without their `mcp:`,
+  `thread:` or `import:` prefix. Candidates sort by identity.
   resolution is resolved for one candidate, ambiguous for two or more,
   not_found for none. Complete envelope status agrees with this result.
 - live: order by identity, evidence, then PID, null PID last. Keep separate

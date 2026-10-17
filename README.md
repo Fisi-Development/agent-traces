@@ -1,4 +1,4 @@
-> Published mirror of royalaid/harbor `agent-traces/` (Harbor decision D043). Changes land in royalaid/harbor; do not open pull requests here.
+> Published mirror of Fisi-Development/harbor `agent-traces/` (Harbor decision D043). Changes land in Fisi-Development/harbor; do not open pull requests here.
 
 # agent-traces
 
@@ -75,6 +75,17 @@ static MSVC runtime. Linux release archives target musl.
 | `handoff ID` | Extract a handoff draft |
 | `live` | Query available liveness evidence |
 | `me` | Resolve the caller's environment session IDs |
+
+An `ID` is a full id, a prefix of at least six characters, a session file
+path, or an address: `harness:id` (for example `claude:f91f78af` or
+`t3:mcp:301cb290`) limits the lookup to one harness, and `harness:id@host`, the
+form Telepathica and Harbor breadcrumbs record, also checks that the session is
+on this host and names the host to run on when it is not. A T3 thread id
+matches with or without its `mcp:`, `thread:` or `import:` prefix. When two
+stores match, `show`, `tree` and `handoff` take the session whose own id is the
+full query, and set aside T3 threads that matched only through a provider they
+ran earlier. `show` output over 20,000 characters goes to a file; its path is
+printed in the summary and again as the last line.
 
 `--since` and `--until` select sessions by recorded activity: `--since` keeps a
 session whose last timestamped event is at or after the cutoff, and `--until`
