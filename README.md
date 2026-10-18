@@ -65,7 +65,7 @@ static MSVC runtime. Linux release archives target musl.
 | Command | Purpose |
 | --- | --- |
 | `where` | Locate stores and describe coverage |
-| `ls` | List sessions with date, harness, and cwd filters |
+| `ls` | List, filter, project, or count sessions by date, harness, cwd, and keyword |
 | `find QUERY` | Rank matching sessions with BM25 |
 | `touched PATH` | Locate recorded file edits |
 | `failures` | Rank errors and user corrections |
@@ -97,6 +97,17 @@ score whole sessions. A score ranks candidates for reading; it is not a failure
 rate. Skipped records are reported on stderr with their store path, and an
 unterminated final record is named as such, since it usually means the file was
 being written while it was read.
+
+`ls` answers listing questions without a script. `--cwd DIR` matches any cwd
+containing DIR, case-insensitive. `--grep TEXT` keeps sessions whose id, title,
+first prompt, cwd, branch or T3 thread contains TEXT; repeat it to keep any of
+several. `--t3` keeps sessions that belong to a T3 thread. Filters apply before
+`--limit`. `--fields address,updated,cwd,title` prints one tab-separated line
+per session (one JSON object each with `--json`), where `address` is the
+`harness:id@host` form, or `t3:<thread>@host` for a session inside a T3 thread.
+`--count-by FIELD` prints how many matching sessions share each value of FIELD
+and ignores `--limit`. An unknown field name is an error. `--all` drops the
+default seven-day window; from 0.2.6 an explicit `--since` still applies with it.
 
 Legacy `ls --json`, `find --json`, and `resolve --json` emit JSON Lines.
 Mailbox consumers should use `--json --schema-version 1` and set

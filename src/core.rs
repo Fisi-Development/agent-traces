@@ -344,6 +344,84 @@ pub fn legacy_row(row: &Session) -> Session {
     }
     r
 }
+/// Fields `ls --fields` and `--count-by` accept: the row's own keys plus
+/// `address`. Naming a field outside this list is an error, so a typo cannot
+/// read as an empty column.
+pub const LS_FIELDS: &[&str] = &[
+    "address",
+    "harness",
+    "home",
+    "id",
+    "kind",
+    "parent",
+    "cwd",
+    "branch",
+    "title",
+    "first_prompt",
+    "started",
+    "updated",
+    "model",
+    "path",
+    "t3_thread",
+    "t3_title",
+    "provider",
+    "provider_id",
+    "provider_instance",
+    "originator",
+    "agent_type",
+    "entrypoint",
+    "nickname",
+    "status",
+    "archived",
+    "copies",
+];
+/// The address Telepathica and fleet rows use for a session on this host:
+/// `t3:<thread>@host` when a T3 thread holds it, else `harness:id@host`.
+pub fn address(row: &Session) -> String {
+    address_on(row, local_host())
+}
+fn address_on(row: &Session, host: &str) -> String {
+    let base = if s(row, "t3_thread").is_empty() {
+        format!("{}:{}", s(row, "harness"), s(row, "id"))
+    } else {
+        format!("t3:{}", s(row, "t3_thread"))
+    };
+    if host.is_empty() {
+        base
+    } else {
+        format!("{base}@{host}")
+    }
+}
+/// One `ls` field of a legacy row; `address` is derived.
+pub fn ls_field(row: &Session, name: &str) -> Value {
+    if name == "address" {
+        Value::String(address(row))
+    } else {
+        row.get(name).cloned().unwrap_or(Value::Null)
+    }
+}
+/// `ls --grep` and `--t3`: a session matches when any term appears,
+/// case-insensitively, in its ids, titles, first prompt, cwd or branch.
+pub fn ls_keep(row: &Session, terms: &[String], t3_only: bool) -> bool {
+    if t3_only && s(row, "t3_thread").is_empty() && s(row, "harness") != "t3" {
+        return false;
+    }
+    terms.is_empty() || {
+        let hay = [
+            "id",
+            "parent",
+            "t3_thread",
+            "title",
+            "t3_title",
+            "first_prompt",
+            "cwd",
+            "branch",
+        ]
+        .map(|k| s(row, k).to_lowercase())
+        .join("\n");
+        terms.iter().any(|t| hay.contains(&t.to_lowercase()))
+    }
+}
 pub fn sorted_recent(rows: &mut [Session]) {
     rows.sort_by_key(|r| {
         std::cmp::Reverse(parse_ts(&r["updated"]).or_else(|| parse_ts(&r["started"])))
@@ -527,6 +605,24 @@ mod safety_tests {
         assert!(ensure_output_path(&ctx, &ctx.home.join(".t3").join("notes.md")).is_err());
     }
     #[test]
+    fn ls_keep_matches_any_term_and_t3_membership() {
+        let linked = serde_json::json!({"harness": "claude", "id": "a1", "cwd": "/w/Infinitus-meta",
+            "title": "Fix ledger", "t3_thread": "mcp:71426afb", "t3_title": "Ledger"});
+        let bare = serde_json::json!({"harness": "codex", "id": "b2", "cwd": "/w/harbor",
+            "branch": "authz/waits", "title": "Waits", "first_prompt": "count permission waits"});
+        let t3 = serde_json::json!({"harness": "t3", "id": "mcp:9", "title": "thread"});
+        let terms = |ts: &[&str]| ts.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert!(ls_keep(&linked, &terms(&["infinitus"]), false));
+        assert!(ls_keep(&linked, &terms(&["71426AFB"]), false));
+        assert!(ls_keep(&bare, &terms(&["nomatch", "AUTHZ"]), false));
+        assert!(ls_keep(&bare, &terms(&["permission waits"]), false));
+        assert!(!ls_keep(&bare, &terms(&["ledger"]), false));
+        assert!(ls_keep(&linked, &[], true));
+        assert!(ls_keep(&t3, &[], true));
+        assert!(!ls_keep(&bare, &[], true));
+        assert!(!ls_keep(&bare, &terms(&["waits"]), true));
+    }
+    #[test]
     fn addresses_name_a_harness_and_check_the_host() {
         let (only, id) =
             split_address_on("claude:f91f78af@Bouncehouse.local", "bouncehouse").unwrap();
@@ -540,6 +636,17 @@ mod safety_tests {
             err.to_string()
                 .contains("run `agent-traces show t3:7b0f5ce8` on desktop-o91444g")
         );
+        let row = serde_json::json!({"harness": "claude", "id": "f91f78af", "t3_thread": ""});
+        assert_eq!(
+            address_on(&row, "bouncehouse"),
+            "claude:f91f78af@bouncehouse"
+        );
+        let row =
+            serde_json::json!({"harness": "codex", "id": "019a", "t3_thread": "mcp:301cb290"});
+        assert_eq!(address_on(&row, "mercury"), "t3:mcp:301cb290@mercury");
+        assert_eq!(address_on(&row, ""), "t3:mcp:301cb290");
+        let (only, id) = split_address_on(&address_on(&row, "mercury"), "mercury").unwrap();
+        assert_eq!((only, id.as_str()), (Some("t3"), "mcp:301cb290"));
         assert_eq!(bare_thread_id("thread:abc"), "abc");
         assert_eq!(bare_thread_id("f91f78af-f067"), "f91f78af-f067");
     }

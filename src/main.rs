@@ -40,14 +40,19 @@ impl Format {
 }
 #[derive(Args, Clone, Default)]
 struct Common {
+    /// Comma-separated: claude, codex, t3, opencode, grok
     #[arg(long)]
     harness: Option<String>,
-    #[arg(long)]
+    /// Keep sessions whose cwd contains DIR, case-insensitive; `.` means here and below
+    #[arg(long, value_name = "DIR")]
     cwd: Option<String>,
+    /// Last activity at or after: 30m, 12h, 3d, 2w, a date, or an RFC 3339 time
     #[arg(long)]
     since: Option<String>,
+    /// Started at or before, in the same forms as --since
     #[arg(long)]
     until: Option<String>,
+    /// Include subagent sessions
     #[arg(long)]
     subagents: bool,
     #[command(flatten)]
@@ -79,10 +84,27 @@ enum Command {
     Ls {
         #[command(flatten)]
         common: Common,
+        /// Drop the default 7-day window; an explicit --since still applies
         #[arg(long)]
         all: bool,
+        /// Show the N most recent sessions; -N shows all but the N oldest
         #[arg(long, default_value_t = 30, allow_hyphen_values = true)]
         limit: i64,
+        /// Keep sessions whose id, title, first prompt, cwd, branch or T3 thread
+        /// contains TEXT, case-insensitive; repeat to keep any of several
+        #[arg(long, value_name = "TEXT")]
+        grep: Vec<String>,
+        /// Keep sessions that belong to a T3 thread
+        #[arg(long)]
+        t3: bool,
+        /// Print only these comma-separated fields: one tab-separated line per
+        /// session, or one JSON object with --json. For example
+        /// address,updated,cwd,title; `address` is harness:id@host
+        #[arg(long, value_delimiter = ',', conflicts_with_all = ["count_by", "schema_version"])]
+        fields: Vec<String>,
+        /// Count matching sessions by FIELD instead of listing them; ignores --limit
+        #[arg(long, value_name = "FIELD", conflicts_with = "schema_version")]
+        count_by: Option<String>,
     },
     Find {
         #[arg(required=true,num_args=1..)]
@@ -217,6 +239,90 @@ fn rows_text(ctx: &Context, rows: &[Session], json: bool) -> String {
         .join("\n")
         + if rows.is_empty() { "" } else { "\n" }
 }
+fn since_note(filters: &Filters) -> String {
+    filters
+        .since
+        .map(|d| format!(" updated since {}", fmt_ts(Some(d))))
+        .unwrap_or_default()
+}
+/// A field as one tab-separated cell: no tabs or line breaks inside.
+fn cell(v: &Value) -> String {
+    let text = match v {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        Value::Array(a) => a.iter().map(cell).collect::<Vec<_>>().join(","),
+        v => v.to_string(),
+    };
+    text.split(['\t', '\n', '\r'])
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+fn rows_fields(rows: &[Session], fields: &[String], json: bool) -> String {
+    rows.iter()
+        .map(|r| {
+            let r = core::legacy_row(r);
+            if json {
+                Value::Object(
+                    fields
+                        .iter()
+                        .map(|f| (f.clone(), core::ls_field(&r, f)))
+                        .collect(),
+                )
+                .to_string()
+            } else {
+                fields
+                    .iter()
+                    .map(|f| cell(&core::ls_field(&r, f)))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            }
+        })
+        .map(|line| line + "\n")
+        .collect()
+}
+fn ls_counts(
+    ctx: &Context,
+    rows: &[Session],
+    field: &str,
+    filters: &Filters,
+    json: bool,
+) -> CommandOutput {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for r in rows {
+        *counts
+            .entry(cell(&core::ls_field(&core::legacy_row(r), field)))
+            .or_default() += 1;
+    }
+    let mut counts = counts.into_iter().collect::<Vec<_>>();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let stdout = counts
+        .iter()
+        .map(|(value, n)| {
+            if json {
+                json!({ field: value, "count": n }).to_string()
+            } else {
+                format!("{n:>6}  {}", if value.is_empty() { "-" } else { value })
+            }
+        })
+        .map(|line| line + "\n")
+        .collect();
+    CommandOutput {
+        stdout,
+        stderr: if json {
+            String::new()
+        } else {
+            format!(
+                "\n{} sessions in {} groups by {field}{}. searched: {}\n",
+                rows.len(),
+                counts.len(),
+                since_note(filters),
+                core::scope_summary(ctx)
+            )
+        },
+        ..Default::default()
+    }
+}
 fn limit_len(total: usize, limit: i64) -> usize {
     if limit < 0 {
         total.saturating_sub(limit.unsigned_abs() as usize)
@@ -263,15 +369,32 @@ fn load_events<'a>(
 
 fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
     match cmd {
-        Command::Ls { common, all, limit } => {
+        Command::Ls {
+            common,
+            all,
+            limit,
+            grep,
+            t3,
+            fields,
+            count_by,
+        } => {
             if common.format.v1() && *limit < 0 {
                 bail!("negative limits are invalid in v1");
             }
-            let mut filters = common.filters(ctx, if *all { None } else { Some("7d") })?;
-            if *all {
-                filters.since = None;
+            for f in fields.iter().chain(count_by) {
+                if !core::LS_FIELDS.contains(&f.as_str()) {
+                    bail!(
+                        "unknown field {f:?}; fields: {}",
+                        core::LS_FIELDS.join(", ")
+                    );
+                }
             }
+            let filters = common.filters(ctx, if *all { None } else { Some("7d") })?;
             let mut rows = core::gather(ctx, &filters)?;
+            rows.retain(|r| core::ls_keep(r, grep, *t3));
+            if let Some(field) = count_by {
+                return Ok(ls_counts(ctx, &rows, field, &filters, common.format.json));
+            }
             if common.format.v1() {
                 rows.sort_by_key(|r| contract::identity_key(&contract::identity(ctx, r)));
             }
@@ -287,17 +410,18 @@ fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
                 ));
             }
             Ok(CommandOutput {
-                stdout: rows_text(ctx, &rows, common.format.json),
+                stdout: if fields.is_empty() {
+                    rows_text(ctx, &rows, common.format.json)
+                } else {
+                    rows_fields(&rows, fields, common.format.json)
+                },
                 stderr: if common.format.json {
                     String::new()
                 } else {
                     format!(
                         "\n{} of {total} sessions{}. searched: {}\n",
                         rows.len(),
-                        filters
-                            .since
-                            .map(|d| format!(" updated since {}", fmt_ts(Some(d))))
-                            .unwrap_or_default(),
+                        since_note(&filters),
                         core::scope_summary(ctx)
                     )
                 },
