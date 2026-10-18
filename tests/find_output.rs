@@ -143,3 +143,75 @@ fn width_widens_the_text_around_each_hit() {
     );
     assert!(text.contains("TAILMARK"), "{text}");
 }
+
+#[test]
+fn repeated_queries_return_independent_groups_including_misses() {
+    let t = store();
+    let rows = json_rows(
+        t.path(),
+        &[
+            "find",
+            "-q",
+            "one pelican",
+            "--query",
+            "absent-needle",
+            "-q",
+            "nothing",
+            "--json",
+            "--hits",
+            "0",
+        ],
+    );
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["query"], "one pelican");
+    assert_eq!(rows[0]["total"], 1);
+    assert_eq!(rows[0]["matches"][0]["id"], ONE);
+    assert_eq!(rows[0]["matches"][0]["hits"], json!([]));
+    assert_eq!(
+        rows[1],
+        json!({"query":"absent-needle", "total":0, "matches":[]})
+    );
+    assert_eq!(rows[2]["matches"][0]["id"], OTHER);
+    let (text, code) = run(
+        t.path(),
+        &[
+            "find",
+            "-q",
+            "one pelican",
+            "-q",
+            "absent-needle",
+            "--hits",
+            "0",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(text.contains("Query: one pelican"));
+    assert!(text.contains("Query: absent-needle"));
+    let counts = json_rows(
+        t.path(),
+        &["find", "-q", "pelican", "--json", "--limit", "0"],
+    );
+    assert_eq!(
+        counts,
+        [json!({"query":"pelican", "total":3, "matches":[]})]
+    );
+    let (out, code) = run(t.path(), &["find", "-q", "absent-needle", "--json"]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(out.trim()).unwrap(),
+        json!({"query":"absent-needle", "total":0, "matches":[]})
+    );
+    for extra in ["--ids", "--count"] {
+        assert_eq!(run(t.path(), &["find", "-q", "pelican", extra]).1, 2);
+    }
+}
+
+#[test]
+fn hyphenated_query_matches_the_literal_term_not_its_separate_parts() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), ONE, &["implement p1-guard".into()]);
+    write(t.path(), OTHER, &["p1 guard p1 guard p1 guard".into()]);
+    let rows = json_rows(t.path(), &["find", "p1-guard", "--json", "--hits", "0"]);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], ONE);
+}

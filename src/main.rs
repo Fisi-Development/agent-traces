@@ -81,6 +81,11 @@ impl Common {
 #[derive(Subcommand)]
 enum Command {
     Where,
+    /// Inspect T3 orchestration metadata
+    T3 {
+        #[command(subcommand)]
+        command: T3Command,
+    },
     Ls {
         #[command(flatten)]
         common: Common,
@@ -107,8 +112,11 @@ enum Command {
         count_by: Option<String>,
     },
     Find {
-        #[arg(required=true,num_args=1..)]
+        #[arg(required_unless_present="query",num_args=1.., conflicts_with="query")]
         terms: Vec<String>,
+        /// Run independent literal queries, preserving a group for each query
+        #[arg(short = 'q', long = "query", conflicts_with_all = ["schema_version", "ids", "count"])]
+        query: Vec<String>,
         #[command(flatten)]
         common: Common,
         #[arg(long="in",default_value="prompts",value_parser=["prompts","assistant","tools","results","all"])]
@@ -206,10 +214,20 @@ enum Command {
         format: Format,
     },
 }
+#[derive(Subcommand)]
+enum T3Command {
+    /// Read a thread's branch, worktree, latest run and latest checkpoint
+    State {
+        thread_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
 impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Where => "where",
+            Self::T3 { .. } => "t3",
             Self::Ls { .. } => "ls",
             Self::Find { .. } => "find",
             Self::Touched { .. } => "touched",
@@ -378,7 +396,28 @@ fn load_events<'a>(
 }
 
 fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
+    execute_with_search(ctx, cmd, None)
+}
+fn execute_with_search(
+    ctx: &Context,
+    cmd: &Command,
+    searched: Option<search::SearchResult>,
+) -> Result<CommandOutput> {
     match cmd {
+        Command::T3 {
+            command: T3Command::State { thread_id, json },
+        } => {
+            let state = agent_traces::adapters::t3::T3::state(ctx, thread_id)?;
+            let text = if *json {
+                state.to_string()
+            } else {
+                serde_json::to_string_pretty(&state)?
+            };
+            Ok(CommandOutput {
+                stdout: redact(&text) + "\n",
+                ..Default::default()
+            })
+        }
         Command::Ls {
             common,
             all,
@@ -440,6 +479,7 @@ fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
         }
         Command::Find {
             terms,
+            query,
             common,
             scope,
             sort,
@@ -453,9 +493,63 @@ fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
             if common.format.v1() && *limit < 0 {
                 bail!("negative limits are invalid in v1");
             }
-            let mut rows = core::gather(ctx, &common.filters(ctx, None)?)?;
-            if common.format.v1() {
-                rows.sort_by_key(|r| contract::identity_key(&contract::identity(ctx, r)));
+            if !query.is_empty() {
+                let rows = core::gather(ctx, &common.filters(ctx, None)?)?;
+                let mut output = CommandOutput::default();
+                let mut found = false;
+                for q in query {
+                    let command = Command::Find {
+                        terms: vec![q.clone()],
+                        query: vec![],
+                        common: common.clone(),
+                        scope: scope.clone(),
+                        sort: sort.clone(),
+                        limit: *limit,
+                        hits: *hits,
+                        width: *width,
+                        ids: false,
+                        count: false,
+                        include_self: *include_self,
+                    };
+                    let result = search::search(
+                        ctx,
+                        rows.clone(),
+                        &SearchOptions {
+                            terms: vec![q.clone()],
+                            scope: scope.clone(),
+                            sort: sort.clone(),
+                            include_self: *include_self,
+                            limit: if *limit < 0 {
+                                usize::MAX
+                            } else {
+                                *limit as usize
+                            },
+                        },
+                    )?;
+                    let total = result.total;
+                    let part = execute_with_search(ctx, &command, Some(result))?;
+                    found |= part.exit_code == 0;
+                    if common.format.json {
+                        let matches = part
+                            .stdout
+                            .lines()
+                            .map(serde_json::from_str::<Value>)
+                            .collect::<std::result::Result<Vec<_>, _>>()?;
+                        output.stdout.push_str(&format!(
+                            "{}\n",
+                            json!({"query":q,"total":total,"matches":matches})
+                        ));
+                    } else {
+                        output
+                            .stdout
+                            .push_str(&format!("Query: {q}\n{}", part.stdout));
+                    }
+                    output
+                        .stderr
+                        .push_str(&format!("Query: {q}\n{}", part.stderr));
+                }
+                output.exit_code = if found { 0 } else { 1 };
+                return Ok(output);
             }
             let options = SearchOptions {
                 terms: terms.clone(),
@@ -468,7 +562,16 @@ fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
                     *limit as usize
                 },
             };
-            let mut result = search::search(ctx, rows, &options)?;
+            let mut result = match searched {
+                Some(result) => result,
+                None => {
+                    let mut rows = core::gather(ctx, &common.filters(ctx, None)?)?;
+                    if common.format.v1() {
+                        rows.sort_by_key(|r| contract::identity_key(&contract::identity(ctx, r)));
+                    }
+                    search::search(ctx, rows, &options)?
+                }
+            };
             if *limit < 0 {
                 result.rows.truncate(limit_len(result.total, *limit));
             }

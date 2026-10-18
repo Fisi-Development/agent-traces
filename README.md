@@ -62,11 +62,29 @@ static MSVC runtime. Linux release archives target musl.
 
 ## Commands
 
+From 0.2.9, `find -q "ticket-one" -q "ticket-two" --json` runs independent
+literal queries in one store discovery. Each JSON line is a group with `query`,
+`total` (before `--limit`), and `matches` (legacy session rows). Missing queries
+still get an empty group. Text output labels each group with `Query:`. Limits,
+scope, sorting, hit budgets and `--width` apply to every query. Positional terms
+remain an AND search; they cannot be combined with `-q`. Grouped queries cannot
+be combined with `--ids`, `--count`, or `--schema-version`. Exit 1 means all
+queries missed; exit 0 means at least one matched.
+
+`agent-traces t3 state THREAD --json` reads metadata from the local T3 v2 store
+without transcript output: thread id, title, branch, worktree path, latest run
+id/status and latest checkpoint id/status/time/ref. Pass a full thread id, with
+or without its `mcp:`, `thread:` or `import:` prefix, or a local `t3:ID@host`
+address. It emits one JSON object; without `--json`, it pretty-prints that
+object. Missing run/checkpoint metadata is null. A missing or ambiguous thread
+is an error; it never guesses between threads.
+
 | Command | Purpose |
 | --- | --- |
 | `where` | Locate stores and describe coverage |
 | `ls` | List, filter, project, or count sessions by date, harness, cwd, and keyword |
 | `find QUERY` | Rank matching sessions with BM25 |
+| `t3 state THREAD` | Read T3 v2 branch, worktree, latest run and checkpoint metadata |
 | `touched PATH` | Locate recorded file edits |
 | `failures` | Rank errors and user corrections |
 | `show ID` | Render a transcript or selected turns |

@@ -11,6 +11,45 @@ use serde_json::{Value, json};
 use std::{collections::HashSet, path::PathBuf};
 pub struct T3;
 impl T3 {
+    /// Inspect orchestration metadata without exporting message or file payloads.
+    pub fn state(ctx: &Context, thread: &str) -> Result<Value> {
+        let con = Self::open_v2(ctx)?.ok_or_else(|| anyhow::anyhow!("T3 v2 store not found"))?;
+        let (harness, id) = crate::core::split_address(thread)?;
+        anyhow::ensure!(harness.is_none_or(|h| h == "t3"), "expected a T3 thread id");
+        // Keep all three reads on the same SQLite snapshot.
+        con.execute_batch("BEGIN")?;
+        let rows = db::query(&con,
+            "select thread_id,title,payload_json from orchestration_v2_projection_threads
+             where deleted_at is null and (thread_id=?1 or substr(thread_id,instr(thread_id,':')+1)=?1)",
+            &[json!(id)])?;
+        anyhow::ensure!(!rows.is_empty(), "no T3 thread matches {thread:?}");
+        anyhow::ensure!(
+            rows.len() == 1,
+            "ambiguous T3 thread {thread:?}; give its prefixed id"
+        );
+        let row = &rows[0];
+        let payload: Value = serde_json::from_str(s(row, "payload_json"))?;
+        let run = db::query(&con,
+            "select run_id,status from orchestration_v2_projection_runs where thread_id=? order by ordinal desc,run_id desc limit 1",
+            &[row["thread_id"].clone()])?.pop().unwrap_or(Value::Null);
+        let checkpoint = if db::table_exists(&con, "orchestration_v2_projection_checkpoints")? {
+            db::query(&con,
+                "select checkpoint_id,status,captured_at,payload_json from orchestration_v2_projection_checkpoints
+                 where thread_id=? order by captured_at desc,checkpoint_id desc limit 1",
+                &[row["thread_id"].clone()])?.pop()
+                .map(|mut c| -> Result<Value> {
+                    let payload: Value = serde_json::from_str(s(&c, "payload_json"))?;
+                    c.as_object_mut().expect("query row is an object").remove("payload_json");
+                    c["ref"] = payload["ref"].clone();
+                    Ok(c)
+                }).transpose()?.unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        Ok(json!({"thread_id":row["thread_id"],"title":row["title"],
+            "branch":payload["branch"],"worktree_path":payload["worktreePath"],
+            "latest_run":run,"latest_checkpoint":checkpoint}))
+    }
     pub(crate) fn running(&self, ctx: &Context) -> Result<Vec<Session>> {
         // A v1-only home keeps 0.1.0's query, so `live` output there is unchanged.
         if Self::open_v2(ctx)?.is_none() {

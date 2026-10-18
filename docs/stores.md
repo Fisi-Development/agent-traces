@@ -1,5 +1,17 @@
 # Trace stores
 
+`agent-traces t3 state THREAD --json` (0.2.9) reads the local
+`.t3/userdata/statev2.sqlite` through the existing read-only WAL connection.
+It selects an exact thread from `orchestration_v2_projection_threads`, reads
+`branch` and `worktreePath` from its JSON payload, selects the highest-ordinal
+run from `orchestration_v2_projection_runs`, and the latest `captured_at`
+checkpoint from `orchestration_v2_projection_checkpoints`. The checkpoint
+payload supplies `ref`; SQL columns supply status and identifiers. The three
+queries share one snapshot. An absent checkpoint table or absent metadata
+produces a null checkpoint; unsupported or unreadable stores are errors.
+This command does not read messages, checkpoint file contents, or provider
+credentials. It does not accept arbitrary SQL.
+
 Surveyed 2026-09-23 on the author's machines; the counts and dates below come from that survey. `agent-traces where` shows the live state; this file records the formats and the traps. Open every SQLite store with `sqlite3 'file:/abs/path?mode=ro'` (sees WAL content, cannot write). A plain `cp` of a live db plus its `-wal` has produced a corrupt copy.
 
 ## Claude Code

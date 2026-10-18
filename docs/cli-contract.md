@@ -13,6 +13,27 @@ validation uses the checked-in file and local references.
 
 Preserve existing arguments, text output, exits, and legacy `--json`.
 Legacy `ls --json`, `find --json`, and `resolve --json` remain JSON Lines.
+From 0.2.9, repeated `find -q QUERY` options select an explicit grouped mode:
+one JSON line per query, `{query,total,matches}`, including empty groups.
+`total` counts matches before the per-query `--limit`; `matches` contains legacy
+session rows, including `hits` with `ts`, `role`, and `snippet`. Ordinary
+`find TERM --json` remains one session per line, with no `sessions` wrapper.
+Use `find TERM --hits 1 --width 2500` to read longer snippets without a script.
+`-q` cannot be combined with positional terms, `--ids`, `--count` or v1 output.
+All-miss groups exit 1; any match exits 0. Invalid arguments/store errors retain
+the usual command error handling. Store discovery is shared across queries;
+content scanning and ranking are independent for each query.
+
+`t3 state THREAD [--json]` is a separate metadata command, outside the v1
+envelope. Its JSON object has `thread_id`, `title`, `branch`, `worktree_path`,
+`latest_run` (`run_id`, `status`, or null), and `latest_checkpoint`
+(`checkpoint_id`, `status`, `captured_at`, `ref`, or null). It accepts exact
+thread ids with optional T3 prefix, or local T3 addresses. Deleted threads are
+excluded. Ambiguous/missing threads or unavailable stores fail with exit 2;
+success exits 0. Run order is descending ordinal; checkpoint order is descending
+capture time, with id as a stable tie breaker. All reads share one read-only
+SQLite transaction. Message bodies and file payloads are never exported.
+
 Use `--json --schema-version 1` for ls, find, live, resolve, me,
 and handoff. It emits exactly one UTF-8 JSON object followed by a newline,
 including for empty results. This explicitly selected format is a document,
