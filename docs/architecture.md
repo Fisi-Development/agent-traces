@@ -15,7 +15,8 @@ opening and existing-WAL enforcement. Rusqlite bundles SQLite into the binary.
 Legacy sessions retain serde_json values to preserve missing-key versus null
 semantics. Events have typed common fields. `search.rs` ports the exact reference
 substring BM25 and ranking rules rather than substituting a tokenizer or scoring
-crate. It performs file prefiltering in-process with regex. `render.rs` and
+crate; its one departure weighs a hyphenated term down where it sits inside a
+longer name (`docs/cli-contract.md`, find). It performs file prefiltering in-process with regex. `render.rs` and
 `commands.rs` implement transcript, handoff, file-touch, and failure output.
 `contract.rs` projects legacy data into the versioned schema without changing
 the legacy format. `platform.rs` uses native process-query APIs for liveness.

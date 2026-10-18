@@ -187,16 +187,38 @@ fn sql_candidates(
 }
 struct Doc {
     event: Event,
-    tf: Vec<usize>,
+    tf: Vec<f64>,
     length: usize,
     first: bool,
 }
-fn bm25(tf: &[usize], length: usize, idf: &[f64], avgdl: f64) -> f64 {
+fn bm25(tf: &[f64], length: usize, idf: &[f64], avgdl: f64) -> f64 {
     tf.iter()
         .zip(idf)
-        .filter(|(f, _)| **f > 0)
-        .map(|(f, idf)| {
-            idf * (*f as f64) * 2.2 / (*f as f64 + 1.2 * (0.25 + 0.75 * length as f64 / avgdl))
+        .filter(|(f, _)| **f > 0.0)
+        .map(|(f, idf)| idf * f * 2.2 / (f + 1.2 * (0.25 + 0.75 * length as f64 / avgdl)))
+        .sum()
+}
+/// A mention of a hyphenated term inside a longer name, such as `k7-latch` in
+/// `impl-k7-latch-r1`, counts this much of a whole-name mention.
+const EMBEDDED_NAME_WEIGHT: f64 = 0.25;
+/// Occurrences of a lowercased term in lowercased text. A plain term keeps the
+/// Python reference's substring count. A hyphenated term is a name: an occurrence
+/// that a name character (alphanumeric, `_` or `-`) touches on either side is
+/// embedded in a longer name and weighs EMBEDDED_NAME_WEIGHT.
+fn term_frequency(text: &str, term: &str) -> f64 {
+    if !term.contains('-') {
+        return text.matches(term).count() as f64;
+    }
+    let name_char = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    text.match_indices(term)
+        .map(|(i, _)| {
+            let before = text[..i].chars().next_back();
+            let after = text[i + term.len()..].chars().next();
+            if before.is_some_and(name_char) || after.is_some_and(name_char) {
+                EMBEDDED_NAME_WEIGHT
+            } else {
+                1.0
+            }
         })
         .sum()
 }
@@ -306,16 +328,13 @@ pub fn search(ctx: &Context, rows: Vec<Session>, options: &SearchOptions) -> Res
                 && one_line(&low, 80) == first;
             n_docs += 1;
             total_len += length;
-            let tf: Vec<usize> = lows
-                .iter()
-                .map(|t| low.matches(t.as_str()).count())
-                .collect();
-            if !tf.iter().any(|n| *n > 0) {
+            let tf: Vec<f64> = lows.iter().map(|t| term_frequency(&low, t)).collect();
+            if !tf.iter().any(|n| *n > 0.0) {
                 continue;
             }
             // Python increments a dict entry once for each duplicate query term.
             for (i, t) in lows.iter().enumerate() {
-                if tf[i] > 0 {
+                if tf[i] > 0.0 {
                     covered.insert(t.clone());
                     for (j, u) in lows.iter().enumerate() {
                         if u == t {
@@ -364,27 +383,24 @@ pub fn search(ctx: &Context, rows: Vec<Session>, options: &SearchOptions) -> Res
             .collect();
         scored.sort_by(|a, b| b.0.total_cmp(&a.0));
         let title = format!("{} {}", label(&row), s(&row, "t3_title")).to_lowercase();
-        let ttf: Vec<usize> = lows
-            .iter()
-            .map(|t| title.matches(t.as_str()).count())
-            .collect();
+        let ttf: Vec<f64> = lows.iter().map(|t| term_frequency(&title, t)).collect();
         let title_score = 2.0 * bm25(&ttf, title.split_whitespace().count().max(1), &idf, avgdl);
         let score = scored[0].0 + 0.5 * (1.0 + scored.len() as f64).ln() + title_score;
-        let match_kind = if ttf.iter().all(|n| *n > 0) {
+        let match_kind = if ttf.iter().all(|n| *n > 0.0) {
             "title"
         } else if scored
             .iter()
-            .any(|(_, d)| d.first && d.tf.iter().all(|n| *n > 0))
+            .any(|(_, d)| d.first && d.tf.iter().all(|n| *n > 0.0))
         {
             "first prompt"
         } else {
             ""
         }
         .to_owned();
-        let full = scored.iter().any(|(_, d)| d.tf.iter().all(|n| *n > 0));
+        let full = scored.iter().any(|(_, d)| d.tf.iter().all(|n| *n > 0.0));
         let hits = scored
             .into_iter()
-            .filter(|(_, d)| !full || d.tf.iter().all(|n| *n > 0))
+            .filter(|(_, d)| !full || d.tf.iter().all(|n| *n > 0.0))
             .map(|(_, d)| d.event)
             .collect();
         row["_score"] = serde_json::json!(rounded_score(score));
@@ -550,9 +566,32 @@ mod tests {
     #[test]
     fn bm25_hand_calculation() {
         let idf = (1.0_f64 + 8.5 / 2.5).ln();
-        assert!((bm25(&[1], 10, &[idf], 10.0) - idf).abs() < 1e-12);
-        assert!(bm25(&[2], 10, &[idf], 10.0) > idf);
-        assert!(bm25(&[1], 20, &[idf], 10.0) < idf);
+        assert!((bm25(&[1.0], 10, &[idf], 10.0) - idf).abs() < 1e-12);
+        assert!(bm25(&[2.0], 10, &[idf], 10.0) > idf);
+        assert!(bm25(&[1.0], 20, &[idf], 10.0) < idf);
+    }
+    #[test]
+    fn hyphenated_terms_weigh_embedded_mentions_down() {
+        // Plain terms keep the reference substring count.
+        assert_eq!(term_frequency("latch k7-latch latches", "latch"), 3.0);
+        // Whole names: text edges and punctuation other than `_` and `-` bound them.
+        assert_eq!(
+            term_frequency("k7-latch, (k7-latch) contracts/k7-latch.md", "k7-latch"),
+            3.0
+        );
+        // Embedded in longer names, on either side.
+        assert_eq!(
+            term_frequency(
+                "impl-k7-latch-r1 xk7-latch k7-latch_2 k7-latch-r2",
+                "k7-latch"
+            ),
+            4.0 * EMBEDDED_NAME_WEIGHT
+        );
+        assert_eq!(
+            term_frequency("é k7-latché", "k7-latch"),
+            EMBEDDED_NAME_WEIGHT
+        );
+        assert_eq!(term_frequency("nothing here", "k7-latch"), 0.0);
     }
     #[test]
     fn snippet_counts_unicode_characters() {

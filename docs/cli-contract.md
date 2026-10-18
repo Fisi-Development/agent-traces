@@ -130,8 +130,12 @@ order. Canonical JSON object key order is not a contract.
 - find: default prompts scope, no date window, limit 15. Preserve the Python
   candidate filtering, substring term counts, skipped-line corpus statistics,
   role weights, title boost, and self exclusions under
-  agent-traces-python-bm25-v1. All terms must occur somewhere across scoped
-  messages of a session. Rank relevance by unrounded score descending then
+  agent-traces-python-bm25-v1, with one departure: a term containing a hyphen
+  is a name, and an occurrence that an alphanumeric, `_` or `-` touches on
+  either side (`p1-guard` inside `impl-p1-guard-r1`) counts 0.25 toward term
+  frequency in messages and titles, so a whole-name mention outranks mentions
+  inside longer names. Terms without a hyphen keep the reference counts. All
+  terms must occur somewhere across scoped messages of a session. Rank relevance by unrounded score descending then
   updated descending. Emit the score rounded to two decimals using Python's
   reference rounding semantics. recent uses title-match, first-prompt-match,
   body-match order then updated descending; oldest uses earliest selected-hit
