@@ -1,6 +1,6 @@
 # Trace stores
 
-`agent-traces t3 state THREAD --json` (0.2.9) reads the local
+`agent-traces t3 state THREAD --json` (0.2.10) reads the local
 `.t3/userdata/statev2.sqlite` through the existing read-only WAL connection.
 It selects an exact thread from `orchestration_v2_projection_threads`, reads
 `branch` and `worktreePath` from its JSON payload, selects the highest-ordinal

@@ -62,7 +62,7 @@ static MSVC runtime. Linux release archives target musl.
 
 ## Commands
 
-From 0.2.9, `find -q "ticket-one" -q "ticket-two" --json` runs independent
+From 0.2.10, `find -q "ticket-one" -q "ticket-two" --json` runs independent
 literal queries in one store discovery. Each JSON line is a group with `query`,
 `total` (before `--limit`), and `matches` (legacy session rows). Missing queries
 still get an empty group. Text output labels each group with `Query:`. Limits,

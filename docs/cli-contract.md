@@ -13,7 +13,7 @@ validation uses the checked-in file and local references.
 
 Preserve existing arguments, text output, exits, and legacy `--json`.
 Legacy `ls --json`, `find --json`, and `resolve --json` remain JSON Lines.
-From 0.2.9, repeated `find -q QUERY` options select an explicit grouped mode:
+From 0.2.10, repeated `find -q QUERY` options select an explicit grouped mode:
 one JSON line per query, `{query,total,matches}`, including empty groups.
 `total` counts matches before the per-query `--limit`; `matches` contains legacy
 session rows, including `hits` with `ts`, `role`, and `snippet`. Ordinary
