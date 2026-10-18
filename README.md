@@ -107,7 +107,7 @@ per session (one JSON object each with `--json`), where `address` is the
 `harness:id@host` form, or `t3:<thread>@host` for a session inside a T3 thread.
 `--count-by FIELD` prints how many matching sessions share each value of FIELD
 and ignores `--limit`. An unknown field name is an error. `--all` drops the
-default seven-day window; from 0.2.6 an explicit `--since` still applies with it.
+default seven-day window; from 0.2.8 an explicit `--since` still applies with it.
 
 `find` prints each session's header and up to `--hits` matching lines
 (default 3) of `--width` characters (default 220). `--ids` prints only one

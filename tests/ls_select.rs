@@ -68,10 +68,11 @@ fn run(home: &Path, args: &[&str]) -> (i32, String, String) {
         .env("TZ", "UTC")
         .output()
         .unwrap();
+    // The binary writes CRLF on Windows; compare lines, not line endings.
     (
         out.status.code().unwrap_or(-1),
-        String::from_utf8(out.stdout).unwrap(),
-        String::from_utf8(out.stderr).unwrap(),
+        String::from_utf8(out.stdout).unwrap().replace("\r\n", "\n"),
+        String::from_utf8(out.stderr).unwrap().replace("\r\n", "\n"),
     )
 }
 
