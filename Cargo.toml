@@ -1,6 +1,6 @@
 [package]
 name = "agent-traces"
-version = "0.2.10"
+version = "0.2.11"
 edition = "2024"
 rust-version = "1.93"
 description = "Read-only cross-harness coding-agent session discovery"
@@ -26,9 +26,13 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 tempfile = "3"
 
+# Build speed over binary size (Royal, 2026-10-18; docs/perf/build-test-speed-2026-10.md):
+# no LTO and 16 codegen units cut a cold purser build from 88 s to 21 s.
 [profile.release]
-lto = "thin"
-codegen-units = 1
+opt-level = 3
+lto = "off"
+codegen-units = 16
+incremental = true
 strip = true
 
 [target.'cfg(unix)'.dependencies]
