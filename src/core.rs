@@ -651,6 +651,18 @@ mod safety_tests {
         assert_eq!(bare_thread_id("f91f78af-f067"), "f91f78af-f067");
     }
     #[test]
+    fn an_address_reads_back_to_its_harness_and_id() {
+        for (harness, id) in [("claude", "f91f78af-f067"), ("t3", "mcp:301cb290")] {
+            let row = serde_json::json!({"harness": harness, "id": id});
+            let addr = address_on(&row, "bouncehouse");
+            assert_eq!(addr, format!("{harness}:{id}@bouncehouse"));
+            let (only, back) = split_address_on(&addr, "bouncehouse").unwrap();
+            assert_eq!((only, back.as_str()), (Some(harness), id));
+        }
+        let row = serde_json::json!({"harness": "codex", "id": "019a"});
+        assert_eq!(address_on(&row, ""), "codex:019a");
+    }
+    #[test]
     fn a_full_id_picks_its_own_session_over_a_t3_thread_that_once_ran_it() {
         let id = "f91f78af-f067-475f-b5a9-5ce9db542cea";
         let rows = vec![

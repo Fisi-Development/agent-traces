@@ -109,7 +109,15 @@ per session (one JSON object each with `--json`), where `address` is the
 and ignores `--limit`. An unknown field name is an error. `--all` drops the
 default seven-day window; from 0.2.6 an explicit `--since` still applies with it.
 
-Legacy `ls --json`, `find --json`, and `resolve --json` emit JSON Lines.
+`find` prints each session's header and up to `--hits` matching lines
+(default 3) of `--width` characters (default 220). `--ids` prints only one
+address per matching session, best first, in the same form as `ls --fields
+address`, which `show` and `resolve` take back; `--count` prints only the number of matching sessions,
+including those past `--limit`. The summary line goes to stderr.
+
+Legacy `ls --json`, `find --json`, and `resolve --json` emit JSON Lines. A
+`find --json` line is the session row plus `_score` and `hits` (each `ts`,
+`role`, `snippet`): five hits, or as many as an explicit `--hits` asks for.
 Mailbox consumers should use `--json --schema-version 1` and set
 `AGENT_TRACES_HOST_ID` to a stable host namespace. The versioned envelope applies
 to ls, find, live, resolve, me, and handoff. See [the contract](docs/cli-contract.md)

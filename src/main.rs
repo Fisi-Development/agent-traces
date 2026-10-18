@@ -117,8 +117,18 @@ enum Command {
         sort: String,
         #[arg(long, default_value_t = 15, allow_hyphen_values = true)]
         limit: i64,
-        #[arg(long, default_value_t = 3, allow_hyphen_values = true)]
-        hits: i64,
+        /// Hits shown per session [default: 3; --json: 5]
+        #[arg(long, allow_hyphen_values = true)]
+        hits: Option<i64>,
+        /// Characters of text shown around each hit
+        #[arg(long, default_value_t = 220)]
+        width: usize,
+        /// Print one address (harness:id@host) per matching session, best first
+        #[arg(long, conflicts_with_all = ["json", "count"])]
+        ids: bool,
+        /// Print only the number of matching sessions
+        #[arg(long, conflicts_with = "json")]
+        count: bool,
         #[arg(long)]
         include_self: bool,
     },
@@ -435,6 +445,9 @@ fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
             sort,
             limit,
             hits,
+            width,
+            ids,
+            count,
             include_self,
         } => {
             if common.format.v1() && *limit < 0 {
@@ -468,17 +481,31 @@ fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
                     json!({"query_terms":terms,"scope":scope,"sort":sort,"score_algorithm":"agent-traces-python-bm25-v1","total":result.total,"limit":limit,"truncated":result.total>matches.len(),"matches":matches}),
                 ));
             }
-            let mut out = String::new();
-            for m in &result.rows {
-                if common.format.json {
+            let mut out = if *count {
+                format!("{}\n", result.total)
+            } else {
+                String::new()
+            };
+            let shown = if *count {
+                &result.rows[..0]
+            } else {
+                &result.rows[..]
+            };
+            for m in shown {
+                if *ids {
+                    out.push_str(&(core::address(&m.row) + "\n"));
+                } else if common.format.json {
                     let mut row = core::legacy_row(&m.row);
                     if let Some(object) = row.as_object_mut() {
                         object.remove("_match");
                     }
                     row["_score"] = json!(search::rounded_score(m.score));
-                    row["hits"]=json!(m.hits.iter().take(5).map(|e|json!({"ts":e.ts.map(iso),"role":e.role,"snippet":redact(&search::snippet(&event_text(e),terms,220))})).collect::<Vec<_>>());
+                    // Legacy JSON carries five hits unless --hits asks otherwise.
+                    let shown = hits.map_or(m.hits.len().min(5), |h| limit_len(m.hits.len(), h));
+                    row["hits"]=json!(m.hits.iter().take(shown).map(|e|json!({"ts":e.ts.map(iso),"role":e.role,"snippet":redact(&search::snippet(&event_text(e),terms,*width))})).collect::<Vec<_>>());
                     out.push_str(&(row.to_string() + "\n"));
                 } else {
+                    let hits = hits.unwrap_or(3);
                     out.push_str(&format!(
                         "{}  <score {:.1}{}>\n",
                         render::fmt_row(ctx, &m.row),
@@ -489,7 +516,7 @@ fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
                             format!(", match in {}", m.match_kind)
                         }
                     ));
-                    for e in m.hits.iter().take(limit_len(m.hits.len(), *hits)) {
+                    for e in m.hits.iter().take(limit_len(m.hits.len(), hits)) {
                         let ts =
                             e.ts.map(|d| fmt_ts(Some(d))[5..].to_string())
                                 .unwrap_or_else(|| " ".repeat(11));
@@ -497,13 +524,13 @@ fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
                             "      {} {:<9} {}\n",
                             ts,
                             e.role,
-                            redact(&search::snippet(&event_text(e), terms, 220))
+                            redact(&search::snippet(&event_text(e), terms, *width))
                         ));
                     }
-                    if (m.hits.len() as i128) > i128::from(*hits) {
+                    if (m.hits.len() as i128) > i128::from(hits) {
                         out.push_str(&format!(
                             "      (+{} more hits)\n",
-                            m.hits.len() as i128 - i128::from(*hits)
+                            m.hits.len() as i128 - i128::from(hits)
                         ));
                     }
                 }

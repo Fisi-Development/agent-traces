@@ -216,7 +216,7 @@ Audit basis: scripts/agent_traces.py on the planning branch before any port.
 | Missing fields | Codex unindexed fallback lacks branch and archived | 811-820 |
 | T3 merge | Provider row gains t3_thread, t3_title, provider_instance | 1263-1277 |
 | ls | JSONL; zero rows exit 0; discovery-order ties | 1420-1430 |
-| find | JSONL; _score retained, _match removed, five hits regardless of --hits; no matches exit 1 | 1452-1566 |
+| find | JSONL; _score retained, _match removed, five hits regardless of --hits (the native CLI honors an explicit --hits from 0.2.7); no matches exit 1 | 1452-1566 |
 | Search terms | Terms may span messages, despite help claiming one message | 1510, 2057 |
 | resolve | JSONL; multiple matches exit 0; no matches exit 1 | 1860-1877 |
 | live | Text only; Claude PID and T3 running; no observations exit 1 | 1967-2022 |
