@@ -582,6 +582,9 @@ fn record_events(r: &Value) -> Vec<Event> {
                             let mut e = Event::new("result", text, ts);
                             e.error = truthy(&b["is_error"]);
                             e.tool_use_id = opt_s(b, "tool_use_id");
+                            if a.iter().filter(|b| s(b, "type") == "tool_result").count() == 1 {
+                                e.git = r["toolUseResult"].get("gitOperation").cloned();
+                            }
                             out.push(e);
                         }
                         "text" => texts.push(s(b, "text").to_owned()),

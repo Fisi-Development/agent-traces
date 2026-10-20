@@ -62,6 +62,11 @@ static MSVC runtime. Linux release archives target musl.
 
 ## Commands
 
+From 0.2.12, `agent-traces commit REV --repo DIR --json` reports read-only local
+session evidence for a commit, with paired tool results, repository comparison,
+and scan coverage. See [Commit evidence](docs/commit-evidence.md) for the JSON
+document, claim rules, and exit codes.
+
 From 0.2.10, `find -q "ticket-one" -q "ticket-two" --json` runs independent
 literal queries in one store discovery. Each JSON line is a group with `query`,
 `total` (before `--limit`), and `matches` (legacy session rows). Missing queries
@@ -86,6 +91,7 @@ is an error; it never guesses between threads.
 | `find QUERY` | Rank matching sessions with BM25 |
 | `t3 state THREAD` | Read T3 v2 branch, worktree, latest run and checkpoint metadata |
 | `touched PATH` | Locate recorded file edits |
+| `commit REV` | Report local session evidence for a git commit |
 | `failures` | Rank errors and user corrections |
 | `show ID` | Render a transcript or selected turns |
 | `resolve ID` | Resolve full IDs and prefixes |

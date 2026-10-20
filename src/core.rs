@@ -131,7 +131,7 @@ pub fn gather(ctx: &Context, filters: &Filters) -> Result<Vec<Session>> {
     Ok(rows)
 }
 /// This host's short name, lowercased, to check the `@host` of an address.
-fn local_host() -> &'static str {
+pub(crate) fn local_host() -> &'static str {
     static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     HOST.get_or_init(|| {
         std::env::var("AGENT_TRACES_HOST")

@@ -153,6 +153,14 @@ enum Command {
         #[arg(long)]
         include_self: bool,
     },
+    /// Read local session evidence for a git commit
+    Commit {
+        rev: String,
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[command(flatten)]
+        common: Common,
+    },
     Failures {
         #[command(flatten)]
         common: Common,
@@ -231,6 +239,7 @@ impl Command {
             Self::Ls { .. } => "ls",
             Self::Find { .. } => "find",
             Self::Touched { .. } => "touched",
+            Self::Commit { .. } => "commit",
             Self::Failures { .. } => "failures",
             Self::Show { .. } => "show",
             Self::Resolve { .. } => "resolve",
@@ -245,6 +254,7 @@ impl Command {
             Self::Ls { common, .. }
             | Self::Find { common, .. }
             | Self::Touched { common, .. }
+            | Self::Commit { common, .. }
             | Self::Failures { common, .. } => Some(&common.format),
             Self::Resolve { format, .. }
             | Self::Handoff { format, .. }
@@ -824,6 +834,18 @@ fn execute_with_search(
                     }
                 },
             ))
+        }
+        Command::Commit { rev, repo, common } => {
+            if common.format.schema_version.is_some() {
+                bail!("commit does not support --schema-version");
+            }
+            agent_traces::evidence::run(
+                ctx,
+                rev,
+                repo.as_deref(),
+                common.filters(ctx, None)?,
+                common.format.json,
+            )
         }
         Command::Touched {
             path,

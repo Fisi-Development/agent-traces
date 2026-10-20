@@ -17,6 +17,8 @@ pub struct Event {
     pub phase: Option<String>,
     pub tool_use_id: Option<String>,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<Value>,
 }
 impl Event {
     pub fn new(role: &str, text: impl Into<String>, ts: Option<DateTime<Utc>>) -> Self {
