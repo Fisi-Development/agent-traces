@@ -43,7 +43,7 @@ confirmation on stdout. Human diagnostics may also appear on stderr.
 Machine handoff defaults to stdout with no artifact write. An explicit
 `--output` writes the same envelope atomically to that path, leaves stdout
 empty, and keeps the documented exit code. It never writes into a store.
-Legacy handoff continues to produce its Markdown file. From 0.2.13, quoted
+Legacy handoff continues to produce its Markdown file. From 0.2.14, quoted
 transcript blocks (including plan state and multiline metadata) use `text`
 fences of at least three backticks, longer than every backtick run in the
 redacted text. Every transcript-derived one-line extract uses an inline code
