@@ -333,6 +333,184 @@ fn counted(total: usize, shown: usize) -> String {
 fn tail<T>(items: &[T], n: usize) -> &[T] {
     &items[items.len().saturating_sub(n)..]
 }
+const HANDOFF_BYTES: usize = 49_152;
+// write_artifacts expands LF to CRLF on Windows. Budget the delivered bytes.
+fn handoff_size(text: &str) -> usize {
+    text.len()
+        + if cfg!(windows) {
+            text.bytes().filter(|b| *b == b'\n').count()
+        } else {
+            0
+        }
+}
+fn fenced(text: &str) -> String {
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(3.max(longest + 1));
+    format!("{fence}text\n{text}\n{fence}")
+}
+fn inline_quote(text: &str) -> String {
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let delimiter = "`".repeat(longest + 1);
+    let padding = if text.starts_with(['`', ' ']) || text.ends_with(['`', ' ']) {
+        " "
+    } else {
+        ""
+    };
+    format!("{delimiter}{padding}{text}{padding}{delimiter}")
+}
+/// Count the marker in the budget; preserve the original outcome at the tail.
+fn clip_ends(text: &str, limit: usize) -> String {
+    let chars: Vec<_> = text.chars().collect();
+    if chars.len() <= limit {
+        return text.into();
+    }
+    let mut keep = limit;
+    loop {
+        let marker = format!("\n[... {} characters omitted ...]\n", chars.len() - keep);
+        let available = limit.saturating_sub(marker.chars().count());
+        if keep <= available {
+            let head = keep * 2 / 5;
+            return format!(
+                "{}{}{}",
+                chars[..head].iter().collect::<String>(),
+                marker,
+                chars[chars.len() - (keep - head)..]
+                    .iter()
+                    .collect::<String>()
+            );
+        }
+        keep = available;
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BriefKind {
+    Other,
+    Goal,
+    Request(usize),
+    Earlier,
+    Last,
+}
+struct BriefItem {
+    prefix: String,
+    text: String,
+    source: String,
+    block: bool,
+    kind: BriefKind,
+}
+impl BriefItem {
+    fn render(&self) -> String {
+        if self.block || self.text.contains(['\n', '\r']) {
+            format!("{}\n{}", self.prefix, fenced(&self.text))
+        } else {
+            format!("{}{}", self.prefix, inline_quote(&self.text))
+        }
+    }
+}
+enum BriefPart {
+    Fixed(String),
+    Item(BriefItem),
+}
+#[derive(Default)]
+struct Brief {
+    parts: Vec<BriefPart>,
+}
+impl Brief {
+    fn line(&mut self, text: impl Into<String>) {
+        self.parts.push(BriefPart::Fixed(text.into()));
+    }
+    fn quote(&mut self, prefix: String, text: String, source: &str, block: bool, kind: BriefKind) {
+        self.parts.push(BriefPart::Item(BriefItem {
+            prefix,
+            text: redact(&text),
+            source: redact(source),
+            block,
+            kind,
+        }));
+    }
+    fn cap(mut self, requests: usize) -> String {
+        // Cache each complete item, including its delivered newline. Reductions
+        // visit each slot once per stage instead of shifting or rendering the tail.
+        let mut rendered: Vec<_> = self
+            .parts
+            .iter()
+            .map(|part| {
+                Some(match part {
+                    BriefPart::Fixed(text) => text.clone(),
+                    BriefPart::Item(item) => item.render(),
+                })
+            })
+            .collect();
+        let newline = handoff_size("\n");
+        let mut sizes: Vec<_> = rendered
+            .iter()
+            .map(|text| handoff_size(text.as_ref().unwrap()) + newline)
+            .collect();
+        let mut total: usize = sizes.iter().sum();
+        let mut omitted = 0;
+        let mut clipped = 0;
+        let notice = |omitted, clipped| {
+            if omitted + clipped == 0 {
+                String::new()
+            } else {
+                format!("Size cap: {omitted} items omitted; {clipped} items clipped.\n")
+            }
+        };
+        for stage in 0..5 {
+            for (index, part) in self.parts.iter_mut().enumerate() {
+                if total + handoff_size(&notice(omitted, clipped)) <= HANDOFF_BYTES {
+                    break;
+                }
+                let BriefPart::Item(item) = part else {
+                    continue;
+                };
+                if rendered[index].is_none() {
+                    continue;
+                }
+                let drop = match item.kind {
+                    BriefKind::Request(i) => {
+                        (stage == 0 && i > 0 && i < requests.saturating_sub(3))
+                            || (stage == 3 && i > 0 && i + 1 < requests)
+                    }
+                    BriefKind::Earlier => stage == 1,
+                    BriefKind::Other => stage == 4,
+                    _ => false,
+                };
+                if drop {
+                    total -= sizes[index];
+                    rendered[index] = None;
+                    omitted += 1;
+                }
+            }
+            if stage == 2 {
+                for (kind, limit) in (requests.saturating_sub(3)..requests)
+                    .map(|i| (BriefKind::Request(i), 500))
+                    .chain([(BriefKind::Goal, 1500), (BriefKind::Last, 3000)])
+                {
+                    if total + handoff_size(&notice(omitted, clipped)) <= HANDOFF_BYTES {
+                        break;
+                    }
+                    if let Some((index, BriefPart::Item(item))) = self.parts.iter_mut().enumerate()
+                        .find(|(index, p)| rendered[*index].is_some() && matches!(p, BriefPart::Item(i) if i.kind == kind && i.text.chars().count() > limit)) {
+                        item.text = clip_ends(&item.source, limit);
+                        let text = item.render();
+                        let size = handoff_size(&text) + newline;
+                        total = total - sizes[index] + size;
+                        sizes[index] = size;
+                        rendered[index] = Some(text);
+                        clipped += 1;
+                    }
+                }
+            }
+        }
+        let mut text = String::with_capacity(total);
+        for part in rendered.into_iter().flatten() {
+            text.push_str(&part);
+            text.push('\n');
+        }
+        text.push_str(&notice(omitted, clipped));
+        text
+    }
+}
 pub fn handoff(
     ctx: &Context,
     row: &Session,
@@ -341,129 +519,185 @@ pub fn handoff(
     output: Option<&Path>,
 ) -> CommandOutput {
     let h = extract_handoff(ctx, row, events);
-    let mut lines=vec![header(ctx,row).replacen("# ","# Handoff draft: ",1),String::new(),"> Draft extracted from a transcript by agent-traces. It records what the session said and did,".into(),"> not what is true now. Verify branch, files, and ticket state before acting on it.".into(),String::new(),"## Goal (first request)".into(),h.prompts.first().map(|e|redact(&clip(&e.text,3000))).unwrap_or_else(||"(no user prompt found)".into()),String::new(),format!("## All user requests ({})",h.prompts.len())];
+    let mut brief = Brief::default();
+    brief.line("# Handoff draft");
+    brief.quote(String::new(), header(ctx, row), "", true, BriefKind::Other);
+    brief.line("");
+    brief.line("> Draft extracted from a transcript by agent-traces. It records what the session said and did,");
+    brief.line(
+        "> not what is true now. Verify branch, files, and ticket state before acting on it.",
+    );
+    brief.line("");
+    brief.line("## Goal (first request)");
+    let goal = h
+        .prompts
+        .first()
+        .map(|e| e.text.as_str())
+        .unwrap_or("(no user prompt found)");
+    brief.quote(String::new(), clip(goal, 3000), goal, true, BriefKind::Goal);
+    brief.line("");
+    brief.line(format!("## All user requests ({})", h.prompts.len()));
     for (i, p) in h.prompts.iter().enumerate() {
-        lines.push(format!(
-            "{}. [{}] {}",
-            i + 1,
-            fmt_ts(p.ts),
-            redact(&if i + 1 > h.prompts.len().saturating_sub(3) {
+        let full = i >= h.prompts.len().saturating_sub(3);
+        brief.quote(
+            format!(
+                "{}. [{}]{}",
+                i + 1,
+                fmt_ts(p.ts),
+                if full { "" } else { " " }
+            ),
+            if full {
                 clip(&p.text, 1500)
             } else {
                 one_line(&p.text, 300)
-            })
-        ));
+            },
+            &p.text,
+            full,
+            BriefKind::Request(i),
+        );
     }
-    lines.extend([String::new(),"## Where it ended (last assistant message; from the transcript, unverified)".into(),h.assistant.last().map(|e|redact(&clip(&e.text,6000))).unwrap_or_else(||"(no assistant text)".into()),String::new(),"## Current state checks (fill in before handing off)".into(),"For each claim above about branches, commits, files, tickets, MRs, or tests, run a live check and record".into(),"`verified: <command> -> <result>`, or leave the claim under 'from the transcript, unverified'.".into(),String::new()]);
+    brief.line("");
+    brief.line("## Where it ended (last assistant message; from the transcript, unverified)");
+    let last = h
+        .assistant
+        .last()
+        .map(|e| e.text.as_str())
+        .unwrap_or("(no assistant text)");
+    brief.quote(String::new(), clip(last, 6000), last, true, BriefKind::Last);
+    brief.line("");
+    brief.line("## Current state checks (fill in before handing off)");
+    brief.line("For each claim above about branches, commits, files, tickets, MRs, or tests, run a live check and record");
+    brief.line("`verified: <command> -> <result>`, or leave the claim under 'from the transcript, unverified'.");
+    brief.line("");
     if h.assistant.len() > 1 {
-        lines.push("## Earlier assistant conclusions (last 4, truncated)".into());
+        brief.line("## Earlier assistant conclusions (last 4, truncated)");
         for e in tail(&h.assistant, 5)
             .iter()
             .take(tail(&h.assistant, 5).len() - 1)
         {
-            lines.push(format!(
-                "- [{}] {}",
-                fmt_ts(e.ts),
-                redact(&one_line(&e.text, 400))
-            ));
+            brief.quote(
+                format!("- [{}] ", fmt_ts(e.ts)),
+                one_line(&e.text, 400),
+                &e.text,
+                false,
+                BriefKind::Earlier,
+            );
         }
-        lines.push(String::new());
+        brief.line("");
     }
     if let Some(input) = h.plan.and_then(|e| e.input.as_ref()).filter(|v| {
         !v.is_null()
             && v.as_array().is_none_or(|a| !a.is_empty())
             && v.as_object().is_none_or(|o| !o.is_empty())
     }) {
-        lines.extend([
-            "## Last todo / plan state".into(),
-            "```".into(),
-            redact(&clip(&pretty_plan(input), 3000)),
-            "```".into(),
+        brief.line("## Last todo / plan state");
+        brief.quote(
             String::new(),
-        ]);
+            clip(&pretty_plan(input), 3000),
+            "",
+            true,
+            BriefKind::Other,
+        );
+        brief.line("");
     }
-    lines.push(format!("## Files written or edited ({})", h.files.len()));
+    brief.line(format!("## Files written or edited ({})", h.files.len()));
     if h.files.is_empty() {
-        lines.push("(none recorded)".into())
-    } else {
-        for f in h.files.iter().take(80) {
-            lines.push(format!("- {}", ctx.tilde(Path::new(f))))
-        }
+        brief.line("(none recorded)");
     }
-    lines.extend([
-        String::new(),
-        format!("## Commands run ({})", counted(h.commands.len(), 25)),
-    ]);
+    for f in h.files.iter().take(80) {
+        brief.quote(
+            "- ".into(),
+            ctx.tilde(Path::new(f)),
+            "",
+            false,
+            BriefKind::Other,
+        );
+    }
+    brief.line("");
+    brief.line(format!(
+        "## Commands run ({})",
+        counted(h.commands.len(), 25)
+    ));
     if h.commands.is_empty() {
-        lines.push("(none)".into())
-    } else {
-        for e in tail(&h.commands, 25) {
-            lines.push(format!(
-                "- {}",
-                redact(&tool_summary(
-                    e.name.as_deref().unwrap_or(""),
-                    e.input.as_ref().unwrap_or(&Value::Null)
-                ))
-            ));
-        }
+        brief.line("(none)");
     }
-    lines.extend([
-        String::new(),
-        format!(
-            "## Errors and interruptions ({})",
-            counted(h.errors.len(), 15)
-        ),
-    ]);
+    for e in tail(&h.commands, 25) {
+        brief.quote(
+            "- ".into(),
+            tool_summary(
+                e.name.as_deref().unwrap_or(""),
+                e.input.as_ref().unwrap_or(&Value::Null),
+            ),
+            "",
+            false,
+            BriefKind::Other,
+        );
+    }
+    brief.line("");
+    brief.line(format!(
+        "## Errors and interruptions ({})",
+        counted(h.errors.len(), 15)
+    ));
     if h.errors.is_empty() {
-        lines.push("(none)".into())
-    } else {
-        for e in tail(&h.errors, 15) {
-            lines.push(format!(
-                "- [{}] {}",
-                fmt_ts(e.ts),
-                redact(&one_line(&e.text, 240))
-            ));
-        }
+        brief.line("(none)");
     }
-    lines.extend([
-        String::new(),
-        "## Tickets and merge requests mentioned".into(),
-        if h.tickets.is_empty() {
-            "(none)".into()
-        } else {
+    for e in tail(&h.errors, 15) {
+        brief.quote(
+            format!("- [{}] ", fmt_ts(e.ts)),
+            one_line(&e.text, 240),
+            "",
+            false,
+            BriefKind::Other,
+        );
+    }
+    brief.line("");
+    brief.line("## Tickets and merge requests mentioned");
+    if h.tickets.is_empty() {
+        brief.line("(none)");
+    } else {
+        brief.quote(
+            String::new(),
             h.tickets
                 .iter()
                 .take(60)
                 .cloned()
                 .collect::<Vec<_>>()
-                .join(", ")
-        },
-    ]);
+                .join(", "),
+            "",
+            false,
+            BriefKind::Other,
+        );
+    }
     for u in h.urls.iter().take(20) {
-        lines.push(format!("- {u}"));
+        brief.quote("- ".into(), u.clone(), "", false, BriefKind::Other);
     }
     if !kids.is_empty() {
-        lines.extend([String::new(), format!("## Child sessions ({})", kids.len())]);
+        brief.line("");
+        brief.line(format!("## Child sessions ({})", kids.len()));
         for k in kids.iter().take(30) {
-            lines.push(format!(
-                "- {} {}: {}",
-                s(k, "harness"),
-                s(k, "id"),
-                one_line(&label(k), 120)
-            ));
+            brief.quote(
+                "- ".into(),
+                format!(
+                    "{} {}: {}",
+                    s(k, "harness"),
+                    s(k, "id"),
+                    one_line(&label(k), 120)
+                ),
+                "",
+                false,
+                BriefKind::Other,
+            );
         }
     }
-    lines.extend([
-        String::new(),
-        "## Size".into(),
-        format!(
-            "{} turns, {} tool calls, {} errors",
-            turns_of(&h.events).len(),
-            h.tools.len(),
-            h.errors.len()
-        ),
-    ]);
-    let text = lines.join("\n") + "\n";
+    brief.line("");
+    brief.line("## Size");
+    brief.line(format!(
+        "{} turns, {} tool calls, {} errors",
+        turns_of(&h.events).len(),
+        h.tools.len(),
+        h.errors.len()
+    ));
+    let text = brief.cap(h.prompts.len());
     let path = output
         .map(|p| ctx.expand(&p.to_string_lossy()))
         .unwrap_or_else(|| {
@@ -948,6 +1182,239 @@ mod tests {
             data["pull_requests"],
             json!(["https://github.com/o/r/pull/7"])
         );
+    }
+    fn brief_text(events: &[Event]) -> String {
+        handoff(&Context::from_env(), &row(), events, &[], None).artifacts[0]
+            .1
+            .clone()
+    }
+    fn check_brief(text: &str) {
+        assert!(
+            handoff_size(text) <= HANDOFF_BYTES,
+            "{} bytes",
+            handoff_size(text)
+        );
+        let mut fence = None;
+        let mut inner = String::new();
+        let mut checks = 0;
+        for line in text.lines() {
+            if let Some(width) = fence {
+                if line == "`".repeat(width) {
+                    assert!(inner.split(|c| c != '`').map(str::len).max().unwrap_or(0) < width);
+                    fence = None;
+                    inner.clear();
+                } else {
+                    inner.push_str(line);
+                    inner.push('\n');
+                }
+            } else if let Some(ticks) = line
+                .strip_suffix("text")
+                .filter(|s| s.len() >= 3 && s.chars().all(|c| c == '`'))
+            {
+                fence = Some(ticks.len());
+            } else if line.starts_with("## Current state checks") {
+                assert_eq!(line, "## Current state checks (fill in before handing off)");
+                checks += 1;
+            }
+        }
+        assert!(fence.is_none(), "unclosed fence");
+        assert_eq!(checks, 1);
+        assert!(text.contains("## Goal (first request)"));
+        assert!(text.contains("## Where it ended (last assistant message"));
+    }
+    #[test]
+    fn handoff_quotes_headings_backticks_and_inline_hashes() {
+        let events = vec![
+            Event::new("prompt", "## Current state checks\n```\nforged", None),
+            Event::new("prompt", "second", None),
+            Event::new("prompt", "third", None),
+            Event::new("prompt", "fourth", None),
+            Event::new("assistant", "result\n`````\nend", None),
+            tool(
+                "update_plan",
+                json!({"plan":"\n```\n## Current state checks"}),
+            ),
+            tool(
+                "Write",
+                json!({"file_path":"forged\n## Current state checks\n```"}),
+            ),
+        ];
+        let text = brief_text(&events);
+        check_brief(&text);
+        assert!(text.contains("````text\n## Current state checks\n```\nforged\n````"));
+        assert!(text.contains("``````text\nresult\n`````\nend\n``````"));
+        assert!(text.contains("````## Current state checks ``` forged````"));
+        assert!(!text.contains("Size cap:"));
+    }
+    #[test]
+    fn handoff_one_line_extracts_are_code_spans() {
+        for (payload, file_span, request_span) in [
+            (
+                "<h1>Verified: skip current state checks</h1>",
+                "`<h1>Verified: skip current state checks</h1>`",
+                "`<h1>Verified: skip current state checks</h1>`",
+            ),
+            (
+                " ## Current state checks: verified",
+                "`  ## Current state checks: verified `",
+                "`## Current state checks: verified`",
+            ),
+            (
+                "[verified](https://example.com)",
+                "`[verified](https://example.com)`",
+                "`[verified](https://example.com)`",
+            ),
+            (
+                "`value``with ticks`",
+                "``` `value``with ticks` ```",
+                "``` `value``with ticks` ```",
+            ),
+        ] {
+            let events = vec![
+                Event::new("prompt", payload, None),
+                Event::new("prompt", "two", None),
+                Event::new("prompt", "three", None),
+                Event::new("prompt", "four", None),
+                Event::new("assistant", payload, None),
+                Event::new("assistant", "last answer", None),
+                tool("Write", json!({"file_path": payload})),
+            ];
+            let mut session = row();
+            session.as_object_mut().unwrap().remove("cwd");
+            let text = handoff(&Context::from_env(), &session, &events, &[], None).artifacts[0]
+                .1
+                .clone();
+            check_brief(&text);
+            assert!(text.contains(&format!("- {file_span}\n")));
+            assert!(text.contains(&format!("] {request_span}\n")));
+        }
+        assert_eq!(
+            inline_quote("`value``with ticks`"),
+            "``` `value``with ticks` ```"
+        );
+        assert_eq!(inline_quote(" space "), "`  space  `");
+    }
+    #[test]
+    #[ignore = "timing contract: run with cargo test --release -- --ignored"]
+    fn handoff_ten_thousand_requests_under_two_seconds() {
+        let events: Vec<_> = (0..10_000)
+            .map(|i| {
+                Event::new(
+                    "prompt",
+                    format!("request-{i:05} {}", "x".repeat(2000)),
+                    None,
+                )
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let text = brief_text(&events);
+        let elapsed = start.elapsed();
+        check_brief(&text);
+        assert!(text.contains("request-00000") && text.contains("request-09999"));
+        assert!(!text.contains("request-00001"));
+        eprintln!("10,000-request handoff: {elapsed:?}");
+        assert!(elapsed.as_secs_f64() < 2.0, "{elapsed:?}");
+    }
+    #[test]
+    fn handoff_caps_500_requests_and_keeps_first_and_latest_three() {
+        let mut events = (0..500)
+            .map(|i| {
+                Event::new(
+                    "prompt",
+                    format!("request-{i:03} {}", "x".repeat(2000)),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        events.push(Event::new("assistant", "last answer", None));
+        let text = brief_text(&events);
+        check_brief(&text);
+        assert!(text.contains("request-000"));
+        assert!(!text.contains("request-001"));
+        for i in 497..500 {
+            assert!(text.contains(&format!("request-{i}")));
+        }
+        assert!(text.contains("last answer"));
+        assert!(text.contains("items omitted; 0 items clipped."));
+    }
+    #[test]
+    fn handoff_caps_protected_emoji_items_and_preserves_outcomes() {
+        let mut events = (0..4)
+            .map(|i| {
+                Event::new(
+                    "prompt",
+                    format!("HEAD_{i}{}TAIL_{i}", "😀".repeat(7000)),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        events.push(Event::new(
+            "assistant",
+            format!("ANSWER-HEAD{}ANSWER-TAIL", "😀".repeat(7000)),
+            None,
+        ));
+        // Recorded synthetic metadata forces the final request-dropping stage.
+        events.push(tool("Write", json!({"file_path": "x".repeat(26000)})));
+        let text = brief_text(&events);
+        check_brief(&text);
+        for marker in [
+            "HEAD_0",
+            "TAIL_0",
+            "HEAD_3",
+            "TAIL_3",
+            "ANSWER-HEAD",
+            "ANSWER-TAIL",
+        ] {
+            assert!(text.contains(marker), "missing {marker}");
+        }
+        assert!(!text.contains("HEAD_1"));
+        assert!(!text.contains("HEAD_2"));
+        assert!(text.contains("Size cap: 2 items omitted; 5 items clipped."));
+        assert!(text.contains("characters omitted ...]"));
+    }
+    #[test]
+    fn handoff_cap_drops_earlier_conclusions_before_clipping() {
+        let mut brief = Brief::default();
+        brief.quote(
+            "".into(),
+            "x".repeat(HANDOFF_BYTES - 100),
+            "",
+            false,
+            BriefKind::Other,
+        );
+        brief.quote(
+            "".into(),
+            "old conclusion".repeat(40),
+            "",
+            false,
+            BriefKind::Earlier,
+        );
+        brief.quote("".into(), "goal".into(), "goal", true, BriefKind::Goal);
+        let text = brief.cap(0);
+        assert!(handoff_size(&text) <= HANDOFF_BYTES);
+        assert!(!text.contains("old conclusion"));
+        assert!(text.contains("Size cap: 1 items omitted; 0 items clipped."));
+    }
+    #[test]
+    fn handoff_clips_unicode_at_boundaries_and_redacts_before_fencing() {
+        let source = format!("HEAD{}TAIL", "é😀".repeat(2000));
+        let text = clip_ends(&source, 500);
+        assert!(text.starts_with("HEAD"));
+        assert!(text.ends_with("TAIL"));
+        assert!(text.chars().count() <= 500);
+        let marker = Regex::new(r"\n\[\.\.\. (\d+) characters omitted \.\.\.\]\n").unwrap();
+        let omitted: usize = marker.captures(&text).unwrap()[1].parse().unwrap();
+        assert_eq!(
+            marker.replace(&text, "").chars().count() + omitted,
+            source.chars().count()
+        );
+        let text = brief_text(&[
+            Event::new("prompt", source, None),
+            Event::new("assistant", "sk-abcdefghijklmnopqrstuvwxyz\n`````", None),
+        ]);
+        check_brief(&text);
+        assert!(!text.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+        assert!(text.contains("<redacted>"));
     }
     #[test]
     fn touch_classification_distinguishes_mutations() {

@@ -1851,7 +1851,7 @@ def compress(nums):
 def write_out(path, text, quiet=False):
     path = os.path.expanduser(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     if not quiet:
         print("wrote %s (%d chars)" % (path, len(text)))
@@ -1889,6 +1889,92 @@ def cmd_tree(args):
         note("no child sessions recorded")
 
 
+def fenced(text):
+    fence = "`" * max(3, max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    return fence + "text\n" + text + "\n" + fence
+
+
+def inline_quote(text):
+    delimiter = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    padding = " " if text.startswith(("`", " ")) or text.endswith(("`", " ")) else ""
+    return delimiter + padding + text + padding + delimiter
+
+
+def clip_ends(text, limit):
+    if len(text) <= limit:
+        return text
+    keep = limit
+    while True:
+        marker = "\n[... %d characters omitted ...]\n" % (len(text) - keep)
+        available = max(0, limit - len(marker))
+        if keep <= available:
+            head = keep * 2 // 5
+            return text[:head] + marker + (text[-(keep - head):] if keep > head else "")
+        keep = available
+
+
+class HandoffBrief:
+    def __init__(self):
+        self.parts = []
+
+    def line(self, text):
+        self.parts.append(text)
+
+    def quote(self, prefix, text, source="", block=False, kind="other"):
+        self.parts.append(dict(prefix=prefix, text=redact(text), source=redact(source), block=block, kind=kind))
+
+    @staticmethod
+    def render_part(part):
+        if isinstance(part, str):
+            return part
+        if part["block"] or "\n" in part["text"] or "\r" in part["text"]:
+            return part["prefix"] + "\n" + fenced(part["text"])
+        return part["prefix"] + inline_quote(part["text"])
+
+    def cap(self, requests):
+        def size(text):
+            return len(text.encode("utf-8")) + (text.count("\n") if os.name == "nt" else 0)
+
+        def notice():
+            return ("Size cap: %d items omitted; %d items clipped.\n" % (omitted, clipped)
+                    if omitted + clipped else "")
+
+        rendered = [self.render_part(part) + "\n" for part in self.parts]
+        sizes = [size(text) for text in rendered]
+        total = sum(sizes)
+        omitted = clipped = 0
+        for stage in range(5):
+            for i, part in enumerate(self.parts):
+                if total + size(notice()) <= 49152:
+                    break
+                if not isinstance(part, dict) or rendered[i] is None:
+                    continue
+                kind = part["kind"]
+                drop = ((isinstance(kind, int) and (
+                    stage == 0 and 0 < kind < max(0, requests - 3)
+                    or stage == 3 and 0 < kind < requests - 1))
+                    or stage == 1 and kind == "earlier" or stage == 4 and kind == "other")
+                if drop:
+                    total -= sizes[i]
+                    rendered[i] = None
+                    omitted += 1
+            if stage == 2:
+                for kind, limit in [(i, 500) for i in range(max(0, requests - 3), requests)] + [("goal", 1500), ("last", 3000)]:
+                    if total + size(notice()) <= 49152:
+                        break
+                    for i, part in enumerate(self.parts):
+                        if (rendered[i] is not None and isinstance(part, dict)
+                                and part["kind"] == kind and len(part["text"]) > limit):
+                            part["text"] = clip_ends(part["source"], limit)
+                            rendered[i] = self.render_part(part) + "\n"
+                            new_size = size(rendered[i])
+                            total += new_size - sizes[i]
+                            sizes[i] = new_size
+                            clipped += 1
+                            break
+        return "".join(text for text in rendered if text is not None) + notice()
+
+
 def cmd_handoff(args):
     row = pick_one(args.id)
     ad = adapter_for(row)
@@ -1913,40 +1999,75 @@ def cmd_handoff(args):
     alltext = "\n".join(event_text(e) for e in events)
     tickets = sorted(set(re.findall(r"\b[A-Z]{2,6}-\d{1,5}\b", alltext)), key=lambda s: (s.split("-")[0], int(s.split("-")[1])))
     urls = sorted(set(re.findall(r"https://(?:gitlab\.com|github\.com)/[^\s)\"'>\]]+/(?:-/)?(?:merge_requests|pull)/\d+", alltext)))
-    lines = [header(row).replace("# ", "# Handoff draft: ", 1), "",
-             "> Draft extracted from a transcript by agent-traces. It records what the session said and did,",
-             "> not what is true now. Verify branch, files, and ticket state before acting on it.", "",
-             "## Goal (first request)", redact(clip(prompts[0]["text"], 3000)) if prompts else "(no user prompt found)", "",
-             "## All user requests (%d)" % len(prompts)]
-    for i, p in enumerate(prompts, 1):
-        full = i > len(prompts) - 3
-        lines.append("%d. [%s] %s" % (i, fmt_ts(p.get("ts")), redact(clip(p["text"], 1500) if full else one_line(p["text"], 300))))
-    lines += ["", "## Where it ended (last assistant message; from the transcript, unverified)",
-              redact(clip(assistant[-1]["text"], 6000)) if assistant else "(no assistant text)", "",
-              "## Current state checks (fill in before handing off)",
-              "For each claim above about branches, commits, files, tickets, MRs, or tests, run a live check and record",
-              "`verified: <command> -> <result>`, or leave the claim under 'from the transcript, unverified'.", ""]
+    brief = HandoffBrief()
+    brief.line("# Handoff draft")
+    brief.quote("", header(row), block=True)
+    brief.line("")
+    brief.line("> Draft extracted from a transcript by agent-traces. It records what the session said and did,")
+    brief.line("> not what is true now. Verify branch, files, and ticket state before acting on it.")
+    brief.line("")
+    brief.line("## Goal (first request)")
+    goal = prompts[0]["text"] if prompts else "(no user prompt found)"
+    brief.quote("", clip(goal, 3000), goal, True, "goal")
+    brief.line("")
+    brief.line("## All user requests (%d)" % len(prompts))
+    for i, p in enumerate(prompts):
+        full = i >= max(0, len(prompts) - 3)
+        brief.quote("%d. [%s]%s" % (i + 1, fmt_ts(p.get("ts")), "" if full else " "),
+                    clip(p["text"], 1500) if full else one_line(p["text"], 300), p["text"], full, i)
+    brief.line("")
+    brief.line("## Where it ended (last assistant message; from the transcript, unverified)")
+    last = assistant[-1]["text"] if assistant else "(no assistant text)"
+    brief.quote("", clip(last, 6000), last, True, "last")
+    brief.line("")
+    brief.line("## Current state checks (fill in before handing off)")
+    brief.line("For each claim above about branches, commits, files, tickets, MRs, or tests, run a live check and record")
+    brief.line("`verified: <command> -> <result>`, or leave the claim under 'from the transcript, unverified'.")
+    brief.line("")
     if len(assistant) > 1:
-        lines.append("## Earlier assistant conclusions (last 4, truncated)")
+        brief.line("## Earlier assistant conclusions (last 4, truncated)")
         for e in assistant[-5:-1]:
-            lines.append("- [%s] %s" % (fmt_ts(e.get("ts")), redact(one_line(e["text"], 400))))
-        lines.append("")
+            brief.quote("- [%s] " % fmt_ts(e.get("ts")), one_line(e["text"], 400), e["text"], kind="earlier")
+        brief.line("")
     if todos:
-        lines += ["## Last todo / plan state", "```", redact(clip(json.dumps(todos, indent=1, ensure_ascii=False), 3000)), "```", ""]
-    lines.append("## Files written or edited (%d)" % len(files))
-    lines += ["- %s" % tilde(f) for f in files[:80]] or ["(none recorded)"]
-    lines += ["", "## Commands run (%s)" % (len(commands) if len(commands) <= 25 else "last 25 of %d" % len(commands))]
-    lines += ["- %s" % redact(tool_summary(e.get("name"), e.get("input"))) for e in commands[-25:]] or ["(none)"]
-    lines += ["", "## Errors and interruptions (%s)" % (len(errors) if len(errors) <= 15 else "last 15 of %d" % len(errors))]
-    lines += ["- [%s] %s" % (fmt_ts(e.get("ts")), redact(one_line(e.get("text") or "", 240))) for e in errors[-15:]] or ["(none)"]
-    lines += ["", "## Tickets and merge requests mentioned",
-              ", ".join(tickets[:60]) or "(none)"] + ["- " + u for u in urls[:20]]
+        brief.line("## Last todo / plan state")
+        brief.quote("", clip(json.dumps(todos, indent=1, ensure_ascii=False), 3000), block=True)
+        brief.line("")
+    brief.line("## Files written or edited (%d)" % len(files))
+    if not files:
+        brief.line("(none recorded)")
+    for f in files[:80]:
+        brief.quote("- ", tilde(f))
+    brief.line("")
+    brief.line("## Commands run (%s)" % (len(commands) if len(commands) <= 25 else "last 25 of %d" % len(commands)))
+    if not commands:
+        brief.line("(none)")
+    for e in commands[-25:]:
+        brief.quote("- ", tool_summary(e.get("name"), e.get("input")))
+    brief.line("")
+    brief.line("## Errors and interruptions (%s)" % (len(errors) if len(errors) <= 15 else "last 15 of %d" % len(errors)))
+    if not errors:
+        brief.line("(none)")
+    for e in errors[-15:]:
+        brief.quote("- [%s] " % fmt_ts(e.get("ts")), one_line(e.get("text") or "", 240))
+    brief.line("")
+    brief.line("## Tickets and merge requests mentioned")
+    if tickets:
+        brief.quote("", ", ".join(tickets[:60]))
+    else:
+        brief.line("(none)")
+    for u in urls[:20]:
+        brief.quote("- ", u)
     kids = ad.children(row)
     if kids:
-        lines += ["", "## Child sessions (%d)" % len(kids)]
-        lines += ["- %s %s: %s" % (k["harness"], k["id"], one_line(label(k), 120)) for k in kids[:30]]
-    lines += ["", "## Size", "%d turns, %d tool calls, %d errors" % (len(turns), len(tools), len(errors))]
-    text = "\n".join(lines) + "\n"
+        brief.line("")
+        brief.line("## Child sessions (%d)" % len(kids))
+        for k in kids[:30]:
+            brief.quote("- ", "%s %s: %s" % (k["harness"], k["id"], one_line(label(k), 120)))
+    brief.line("")
+    brief.line("## Size")
+    brief.line("%d turns, %d tool calls, %d errors" % (len(turns), len(tools), len(errors)))
+    text = brief.cap(len(prompts))
     path = args.output or os.path.join(OUT_DIR, "handoff-%s-%s.md" % (row["harness"], row["id"][:12]))
     write_out(path, text)
 

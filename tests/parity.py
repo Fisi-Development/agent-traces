@@ -226,6 +226,9 @@ def main():
                         raise AssertionError("v1 must reject a missing host ID before emitting an envelope")
         if before != snapshot(home):
             raise AssertionError("command mutated fixture store content")
+        if not opts.reference_only and not opts.snapshot and (not opts.case or "handoff" in opts.case):
+            from handoff_safety import run_cases
+            checked += run_cases(binary)
         print(f"{checked} cases, {failed} failures")
         return bool(failed)
 

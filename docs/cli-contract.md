@@ -43,7 +43,32 @@ confirmation on stdout. Human diagnostics may also appear on stderr.
 Machine handoff defaults to stdout with no artifact write. An explicit
 `--output` writes the same envelope atomically to that path, leaves stdout
 empty, and keeps the documented exit code. It never writes into a store.
-Legacy handoff continues to produce its Markdown file.
+Legacy handoff continues to produce its Markdown file. From 0.2.13, quoted
+transcript blocks (including plan state and multiline metadata) use `text`
+fences of at least three backticks, longer than every backtick run in the
+redacted text. Every transcript-derived one-line extract uses an inline code
+span, including requests, conclusions, file paths, commands and metadata.
+Its backtick delimiter is one longer than the longest backtick run in the text;
+one space pads each side when the text starts or ends with a backtick or space.
+Tool-written headings, labels, counts and formatted timestamps remain plain.
+Redaction runs before fencing. Existing per-item clip lengths are unchanged
+for briefs that fit.
+
+The complete Markdown brief is limited to 49,152 UTF-8 bytes, including fences,
+Windows CRLF expansion, and the size-cap notice. To fit, it first omits the
+oldest user requests except the first and newest three, then the oldest earlier
+assistant conclusions.
+If needed, it clips the newest three requests to 500 characters each in order,
+then the Goal to 1,500, then the last assistant message to 3,000. These further
+clips use the redacted original text, keeping about 40% head and 60% tail with
+one `[... N characters omitted ...]` line, counted within the character limit.
+It then omits the protected recent requests except the newest, retaining the
+first request. Unbounded auxiliary metadata is omitted only if still needed.
+The Goal, last assistant message, and Current state checks section always
+survive. Complete items are rendered after reductions, so UTF-8 characters and
+fences are never split. A single `Size cap: N items omitted; M items clipped.`
+line reports cap reductions (an item clipped and later omitted counts in both).
+This byte cap applies to the legacy Markdown artifact, not the v1 JSON envelope.
 
 An incomplete or unparsable envelope is a transport failure; consumers never
 treat it as an empty successful scan. Buffer the envelope before emitting it.
