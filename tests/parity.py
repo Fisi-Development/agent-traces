@@ -34,7 +34,7 @@ def environment(home):
 
 def reference(home, args):
     # Load a frozen reference without editing its source or invoking __main__.
-    mod = runpy.run_path(str(ROOT / "tests/reference/agent_traces.py"), run_name="parity_reference")
+    mod = runpy.run_path(os.environ.get("AGENT_TRACES_REFERENCE", str(ROOT / "tests/reference/agent_traces.py")), run_name="parity_reference")
     globals_ = mod["main"].__globals__
     globals_.update(HOME=str(home), T3_DB=str(home / ".t3/userdata/state.sqlite"),
                     CACHE_DIR=str(home / "cache"), OUT_DIR=str(home / "out"))

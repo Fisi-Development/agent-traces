@@ -43,7 +43,7 @@ confirmation on stdout. Human diagnostics may also appear on stderr.
 Machine handoff defaults to stdout with no artifact write. An explicit
 `--output` writes the same envelope atomically to that path, leaves stdout
 empty, and keeps the documented exit code. It never writes into a store.
-Legacy handoff continues to produce its Markdown file. From 0.2.14, quoted
+Legacy handoff continues to produce its Markdown file. From 0.2.15, quoted
 transcript blocks (including plan state and multiline metadata) use `text`
 fences of at least three backticks, longer than every backtick run in the
 redacted text. Every transcript-derived one-line extract uses an inline code
@@ -278,3 +278,27 @@ Audit basis: scripts/agent_traces.py on the planning branch before any port.
 
 None of these documented legacy differences authorizes production changes
 during the planning phase.
+
+## Handoff lineage (0.2.15)
+
+Immediately after `# Handoff draft`, handoff writes one unfenced line:
+`[handoff-from harness=<harness> session=<session id> host=<lowercase hostname>]`.
+It names the source session. Consumers must treat this as an observed claim,
+not verified identity, and ignore markers inside fenced code blocks. Transcript
+extracts remain quoted, with a delivered UTF-8 byte cap of 49,152 bytes.
+The skill's Python fallback uses the same quoting and clipping order as Rust.
+Malformed marker identities fail without writing a brief. Fields use bounded
+ASCII tokens: harness `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`, session
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,255}`, and host
+`[a-z0-9][a-z0-9.-]{0,252}`.
+
+For a Claude subagent or workflow agent, `session` is
+`<parent session id>-agent-<child id>`, without Lore's `claude-code-` prefix.
+The adapter obtains the parent from the transcript directory immediately above
+`subagents`; the child comes from the `agent-<child id>.jsonl` filename. The
+256-character session bound applies to the assembled id (a 36-character parent
+and an 8-character child use 51 characters). Rust and the skill's Python fallback
+use this same form. Lore resolves exact source ids first, and accepts a legacy
+child-only suffix only when exactly one stored session matches. Missing or
+ambiguous sources keep the receiver's claimed id in `linked_from` with
+`unresolved: true`, and attach no `linked_to` to any candidate.

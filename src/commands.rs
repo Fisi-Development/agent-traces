@@ -511,6 +511,38 @@ impl Brief {
         text
     }
 }
+fn handoff_marker(row: &Session, host: &str) -> Result<String> {
+    // Marker fields are unquoted Markdown. Bound them before they can enter
+    // fixed brief parts, which the transcript clipping stages cannot reduce.
+    static FIELDS: LazyLock<[(&str, Regex); 3]> = LazyLock::new(|| {
+        [
+            ("harness", r"\A[A-Za-z0-9][A-Za-z0-9_-]{0,63}\z"),
+            ("session", r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\z"),
+            ("host", r"\A[a-z0-9][a-z0-9.-]{0,252}\z"),
+        ]
+        .map(|(name, pattern)| (name, Regex::new(pattern).unwrap()))
+    });
+    anyhow::ensure!(
+        FIELDS[1].1.is_match(s(row, "id")),
+        "invalid handoff marker session"
+    );
+    // Claude's adapter reads parent from the directory above subagents, even
+    // for workflow agents. Lore uses that parent to qualify the child id.
+    let session_id = if s(row, "harness") == "claude" && !s(row, "parent").is_empty() {
+        format!("{}-agent-{}", s(row, "parent"), s(row, "id"))
+    } else {
+        s(row, "id").to_owned()
+    };
+    let values = [s(row, "harness"), &session_id, host];
+    for ((name, pattern), value) in FIELDS.iter().zip(values) {
+        anyhow::ensure!(pattern.is_match(value), "invalid handoff marker {name}");
+    }
+    Ok(format!(
+        "[handoff-from harness={} session={} host={}]",
+        values[0], values[1], values[2]
+    ))
+}
+
 pub fn handoff(
     ctx: &Context,
     row: &Session,
@@ -518,9 +550,20 @@ pub fn handoff(
     kids: &[Session],
     output: Option<&Path>,
 ) -> CommandOutput {
+    let marker = match handoff_marker(row, crate::core::local_host()) {
+        Ok(marker) => marker,
+        Err(err) => {
+            return CommandOutput {
+                stderr: format!("{err}\n"),
+                exit_code: 1,
+                ..Default::default()
+            };
+        }
+    };
     let h = extract_handoff(ctx, row, events);
     let mut brief = Brief::default();
     brief.line("# Handoff draft");
+    brief.line(marker);
     brief.quote(String::new(), header(ctx, row), "", true, BriefKind::Other);
     brief.line("");
     brief.line("> Draft extracted from a transcript by agent-traces. It records what the session said and did,");
@@ -1183,6 +1226,62 @@ mod tests {
             json!(["https://github.com/o/r/pull/7"])
         );
     }
+    #[test]
+    fn handoff_marker_qualifies_claude_children_and_bounds_the_combined_id() {
+        let mut session = row();
+        session["id"] = json!("bbbbbbbb");
+        session["parent"] = json!("aaaaaaaa-1111-4111-8111-111111111111");
+        assert_eq!(
+            handoff_marker(&session, "fixture-host").unwrap(),
+            "[handoff-from harness=claude session=aaaaaaaa-1111-4111-8111-111111111111-agent-bbbbbbbb host=fixture-host]"
+        );
+        session["parent"] = json!("a".repeat(241));
+        assert!(handoff_marker(&session, "fixture-host").is_ok());
+        session["parent"] = json!("a".repeat(242));
+        assert!(handoff_marker(&session, "fixture-host").is_err());
+        session["parent"] = json!("parent\nforged");
+        assert!(handoff_marker(&session, "fixture-host").is_err());
+        session["parent"] = json!("valid-parent");
+        for id in [Value::Null, json!(""), json!("-child")] {
+            session["id"] = id;
+            assert!(handoff_marker(&session, "fixture-host").is_err());
+        }
+        session["id"] = json!("bbbbbbbb");
+        session["harness"] = json!("codex");
+        assert_eq!(
+            handoff_marker(&session, "fixture-host").unwrap(),
+            "[handoff-from harness=codex session=bbbbbbbb host=fixture-host]"
+        );
+    }
+    #[test]
+    fn handoff_marker_rejects_unsafe_or_unbounded_fields() {
+        for (key, value) in [
+            ("id", "fixture\n# forged".to_owned()),
+            ("id", "x".repeat(60_000)),
+            ("id", "x".repeat(257)),
+            ("id", "fixture]".to_owned()),
+            ("id", "fixture\u{2028}forged".to_owned()),
+            ("id", String::new()),
+            ("harness", "claude\nforged".to_owned()),
+            ("harness", "x".repeat(65)),
+        ] {
+            let mut session = row();
+            session[key] = json!(value);
+            assert!(handoff_marker(&session, "fixture-host").is_err());
+            let output = handoff(&Context::from_env(), &session, &[], &[], None);
+            assert_eq!(output.exit_code, 1);
+            assert!(output.artifacts.is_empty());
+            assert!(output.stderr.starts_with("invalid handoff marker"));
+        }
+        for host in ["host\nforged", "HOST", "", &"x".repeat(254)] {
+            assert!(handoff_marker(&row(), host).is_err());
+        }
+        let mut session = row();
+        session["harness"] = json!("a".repeat(64));
+        session["id"] = json!("a".repeat(256));
+        assert!(handoff_marker(&session, &"a".repeat(253)).is_ok());
+    }
+
     fn brief_text(events: &[Event]) -> String {
         handoff(&Context::from_env(), &row(), events, &[], None).artifacts[0]
             .1

@@ -1975,8 +1975,29 @@ class HandoffBrief:
         return "".join(text for text in rendered if text is not None) + notice()
 
 
+def handoff_marker(row, host):
+    # Unquoted fixed fields must be bounded before transcript clipping.
+    session_id = row["id"]
+    session_pattern = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}"
+    if not isinstance(session_id, str) or not re.fullmatch(session_pattern, session_id):
+        raise SystemExit("invalid handoff marker session")
+    if row["harness"] == "claude" and row.get("parent"):
+        # Claude metadata derives parent from the directory above subagents.
+        session_id = "%s-agent-%s" % (row["parent"], session_id)
+    for name, value, pattern in [
+        ("harness", row["harness"], r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}"),
+        ("session", session_id, session_pattern),
+        ("host", host, r"[a-z0-9][a-z0-9.-]{0,252}"),
+    ]:
+        if not isinstance(value, str) or not re.fullmatch(pattern, value):
+            raise SystemExit("invalid handoff marker %s" % name)
+    return "[handoff-from harness=%s session=%s host=%s]" % (row["harness"], session_id, host)
+
+
 def cmd_handoff(args):
     row = pick_one(args.id)
+    host = (os.environ.get("AGENT_TRACES_HOST") or os.environ.get("COMPUTERNAME") or __import__("socket").gethostname()).strip().split(".")[0].lower()
+    marker = handoff_marker(row, host)
     ad = adapter_for(row)
     events = [e for e in ad.events(row) if e["role"] != "notice"]
     turns = turns_of(events)
@@ -2001,6 +2022,7 @@ def cmd_handoff(args):
     urls = sorted(set(re.findall(r"https://(?:gitlab\.com|github\.com)/[^\s)\"'>\]]+/(?:-/)?(?:merge_requests|pull)/\d+", alltext)))
     brief = HandoffBrief()
     brief.line("# Handoff draft")
+    brief.line(marker)
     brief.quote("", header(row), block=True)
     brief.line("")
     brief.line("> Draft extracted from a transcript by agent-traces. It records what the session said and did,")
