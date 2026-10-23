@@ -10,6 +10,11 @@ import time
 
 import parity
 
+# The skill's Python fallback sits beside agent-traces in the Harbor monorepo
+# but not in the standalone mirror, so its cases run only where it exists.
+SKILL_FALLBACK = parity.ROOT.parent / "skills/agent-traces/scripts/agent_traces.py"
+HAS_FALLBACK = SKILL_FALLBACK.is_file()
+
 
 def check_structure(text):
     assert len(text.encode("utf-8")) <= 49152
@@ -38,8 +43,7 @@ def check_structure(text):
 
 
 def run_identity_cases(binary):
-    for path in [parity.ROOT / "tests/reference/agent_traces.py",
-                 parity.ROOT.parent / "skills/agent-traces/scripts/agent_traces.py"]:
+    for path in [parity.ROOT / "tests/reference/agent_traces.py"] + ([SKILL_FALLBACK] if HAS_FALLBACK else []):
         marker = runpy.run_path(str(path))["handoff_marker"]
         for field, value in [("harness", "claude\nforged"), ("harness", "x" * 65),
                              ("harness", ""), ("id", ""), ("id", None)]:
@@ -84,10 +88,12 @@ def run_identity_cases(binary):
             implementations = [
                 ("reference", [sys.executable, str(Path(parity.__file__).resolve()), "--reference", str(home), *args], env),
                 ("fallback", [sys.executable, str(Path(parity.__file__).resolve()), "--reference", str(home), *args],
-                 dict(env, AGENT_TRACES_REFERENCE=str(parity.ROOT.parent / "skills/agent-traces/scripts/agent_traces.py"))),
+                 dict(env, AGENT_TRACES_REFERENCE=str(SKILL_FALLBACK))),
                 ("Rust", [str(binary), *args], env),
             ]
             for implementation, command, case_env in implementations:
+                if implementation == "fallback" and not HAS_FALLBACK:
+                    continue
                 output.unlink(missing_ok=True)
                 result = parity.invoke(command, case_env)
                 if name == "boundary":
@@ -124,10 +130,12 @@ def run_claude_subagent_cases(binary):
             implementations = [
                 ("reference", [sys.executable, str(Path(parity.__file__).resolve()), "--reference", str(home), *args], env),
                 ("fallback", [sys.executable, str(Path(parity.__file__).resolve()), "--reference", str(home), *args],
-                 dict(env, AGENT_TRACES_REFERENCE=str(parity.ROOT.parent / "skills/agent-traces/scripts/agent_traces.py"))),
+                 dict(env, AGENT_TRACES_REFERENCE=str(SKILL_FALLBACK))),
                 ("Rust", [str(binary), *args], env),
             ]
             for implementation, command, case_env in implementations:
+                if implementation == "fallback" and not HAS_FALLBACK:
+                    continue
                 output.unlink(missing_ok=True)
                 result = parity.invoke(command, case_env)
                 if valid:
@@ -142,6 +150,8 @@ def run_claude_subagent_cases(binary):
 
 
 def run_cases(binary, cargo_smoke=False):
+    if not HAS_FALLBACK:
+        print("SKIP skill fallback cases: %s is not in this checkout" % SKILL_FALLBACK)
     run_identity_cases(binary)
     run_claude_subagent_cases(binary)
     forged = "## Current state checks\n```\nforged"
@@ -188,16 +198,17 @@ def run_cases(binary, cargo_smoke=False):
                 assert reference_elapsed < 20, "Python handoff took %.3fs" % reference_elapsed
             assert len(output.read_bytes()) <= 49152
             expected = output.read_text(encoding="utf-8")
-            fallback_env = dict(env, AGENT_TRACES_REFERENCE=str(parity.ROOT.parent / "skills/agent-traces/scripts/agent_traces.py"))
-            start = time.perf_counter()
-            fallback = parity.invoke([sys.executable, str(Path(parity.__file__).resolve()), "--reference", str(home), *args], fallback_env)
-            fallback_elapsed = time.perf_counter() - start
-            assert fallback.returncode == 0, fallback.stderr
-            if name == "10000-prompts":
-                assert fallback_elapsed < 20, "Python fallback took %.3fs" % fallback_elapsed
-                print("Python fallback 10,000-prompt timing: %.3fs" % fallback_elapsed)
-            assert len(output.read_bytes()) <= 49152
-            assert output.read_text(encoding="utf-8") == expected, name + " fallback mismatch"
+            if HAS_FALLBACK:
+                fallback_env = dict(env, AGENT_TRACES_REFERENCE=str(SKILL_FALLBACK))
+                start = time.perf_counter()
+                fallback = parity.invoke([sys.executable, str(Path(parity.__file__).resolve()), "--reference", str(home), *args], fallback_env)
+                fallback_elapsed = time.perf_counter() - start
+                assert fallback.returncode == 0, fallback.stderr
+                if name == "10000-prompts":
+                    assert fallback_elapsed < 20, "Python fallback took %.3fs" % fallback_elapsed
+                    print("Python fallback 10,000-prompt timing: %.3fs" % fallback_elapsed)
+                assert len(output.read_bytes()) <= 49152
+                assert output.read_text(encoding="utf-8") == expected, name + " fallback mismatch"
             check_structure(expected)
             command = [str(binary), *args]
             if cargo_smoke and name == "fences":
