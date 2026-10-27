@@ -339,8 +339,15 @@ pub fn render_event(e: &Event, full: bool, results: bool) -> String {
                 e.input.as_ref().unwrap_or(&Value::Null)
             ))
         ),
-        "result" if e.error => format!("{ts}   ! tool error: {}", redact(&one_line(&e.text, 300))),
-        "result" if results => format!("{ts}   -> {}", redact(&one_line(&e.text, 300))),
+        "result" if e.error || results => format!(
+            "{ts}   {}{}",
+            if e.error { "! tool error: " } else { "-> " },
+            redact(&if full {
+                e.text.clone()
+            } else {
+                one_line(&e.text, 300)
+            })
+        ),
         "system" => format!("{ts}   [system] {}", redact(&one_line(&e.text, 300))),
         _ => String::new(),
     }
@@ -499,6 +506,27 @@ mod tests {
             "none"
         );
         assert!(parse_range(Some("bad"), 8).is_err());
+    }
+    #[test]
+    fn full_results_preserve_multiline_bodies_and_redact_secrets() {
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz";
+        let text = format!("{secret}\n{}\nlast line", "x".repeat(320));
+        let mut e = Event::new("result", text, None);
+        let expected_body = format!("<redacted>\n{}\nlast line", "x".repeat(320));
+        let compact_body = format!("<redacted> {}…", "x".repeat(269));
+        for error in [false, true] {
+            e.error = error;
+            let prefix = if error { "! tool error: " } else { "-> " };
+            assert_eq!(
+                render_event(&e, false, true),
+                format!("        {prefix}{compact_body}")
+            );
+            assert_eq!(
+                render_event(&e, true, true),
+                format!("        {prefix}{expected_body}")
+            );
+            assert!(!render_event(&e, true, true).contains(secret));
+        }
     }
     #[test]
     fn notices_do_not_split_turns_and_results_are_opt_in() {
