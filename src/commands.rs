@@ -1148,6 +1148,29 @@ mod tests {
         }
     }
     #[test]
+    fn show_notices_are_opt_in_and_default_output_is_unchanged() {
+        let ctx = Context::from_env();
+        let ordinary = vec![
+            Event::new("prompt", "hello", None),
+            Event::new("assistant", "answer", None),
+        ];
+        let mut events = ordinary.clone();
+        events.insert(1, Event::new("notice", "original user context", None));
+        let expected = show(&ctx, &row(), &ordinary, &ShowOptions::default()).unwrap();
+        for full in [false, true] {
+            let mut opts = ShowOptions {
+                full,
+                ..Default::default()
+            };
+            let out = show(&ctx, &row(), &events, &opts).unwrap();
+            assert_eq!(out.stdout, expected.stdout);
+            opts.notices = true;
+            let out = show(&ctx, &row(), &events, &opts).unwrap();
+            assert!(out.stdout.contains("[notice] original user context"));
+            assert!(out.stdout.contains("- turns: 1\n"));
+        }
+    }
+    #[test]
     fn show_filter_and_spill_are_observable() {
         let ctx = Context::from_env();
         let events = vec![

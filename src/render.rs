@@ -348,6 +348,14 @@ pub fn render_event(e: &Event, full: bool, results: bool) -> String {
                 one_line(&e.text, 300)
             })
         ),
+        "notice" => format!(
+            "{ts}   [notice] {}",
+            redact(&if full {
+                e.text.clone()
+            } else {
+                one_line(&e.text, 300)
+            })
+        ),
         "system" => format!("{ts}   [system] {}", redact(&one_line(&e.text, 300))),
         _ => String::new(),
     }
@@ -506,6 +514,30 @@ mod tests {
             "none"
         );
         assert!(parse_range(Some("bad"), 8).is_err());
+    }
+    #[test]
+    fn notices_preserve_full_delegation_context_and_redact_secrets() {
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz";
+        let text = format!(
+            "<codex_delegation>\n{secret}\n{}\noriginal user context\n</codex_delegation>",
+            "x".repeat(320)
+        );
+        let e = Event::new("notice", text, None);
+        let full_body = format!(
+            "<codex_delegation>\n<redacted>\n{}\noriginal user context\n</codex_delegation>",
+            "x".repeat(320)
+        );
+        let compact_body = format!("<codex_delegation> <redacted> {}…", "x".repeat(250));
+        for results in [false, true] {
+            assert_eq!(
+                render_event(&e, false, results),
+                format!("        [notice] {compact_body}")
+            );
+            assert_eq!(
+                render_event(&e, true, results),
+                format!("        [notice] {full_body}")
+            );
+        }
     }
     #[test]
     fn full_results_preserve_multiline_bodies_and_redact_secrets() {
