@@ -452,7 +452,6 @@ pub fn ensure_output_path(ctx: &Context, path: &std::path::Path) -> Result<std::
         vec![".cursor"],
         vec![".gemini"],
         vec![".grok"],
-        vec![".t3"],
         vec![".codex"],
         vec![".claude"],
         vec![".local", "share", "opencode"],
@@ -485,14 +484,19 @@ pub fn ensure_output_path(ctx: &Context, path: &std::path::Path) -> Result<std::
             protected.push(parent.to_path_buf());
         }
     }
-    // T3 keeps its git worktrees beside its store; those are ordinary
-    // checkouts, not session data.
+    // T3 keeps its git worktrees and per-task scratch folders beside its
+    // store; those are ordinary task files, not session data. Only this
+    // blanket ~/.t3 guard yields to them: a store configured or read inside
+    // ~/.t3 stays protected above.
     let t3_root = physical_path(&clean(&ctx.home.join(".t3")));
-    let in_worktree = physical.starts_with(t3_root.join("worktrees"));
-    if protected.iter().any(|p| {
-        let root = physical_path(&clean(p));
-        physical.starts_with(&root) && !(in_worktree && root == t3_root)
-    }) {
+    let in_t3_workspace = ["worktrees", "scratch"]
+        .iter()
+        .any(|dir| physical.starts_with(t3_root.join(dir)));
+    if (physical.starts_with(&t3_root) && !in_t3_workspace)
+        || protected
+            .iter()
+            .any(|p| physical.starts_with(physical_path(&clean(p))))
+    {
         bail!(
             "refusing to write inside a session store: {}",
             normalized.display()
@@ -603,6 +607,33 @@ mod safety_tests {
         let store = ctx.home.join(".t3").join("userdata").join("notes.md");
         assert!(ensure_output_path(&ctx, &store).is_err());
         assert!(ensure_output_path(&ctx, &ctx.home.join(".t3").join("notes.md")).is_err());
+    }
+    #[test]
+    fn t3_scratch_is_writable_but_its_store_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = Context::from_env();
+        ctx.home = temp.path().join("home");
+        let scratch = ctx.home.join(".t3").join("scratch").join("2026-10-24-task");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::create_dir_all(ctx.home.join(".t3").join("userdata")).unwrap();
+        std::fs::write(
+            ctx.home.join(".t3").join("userdata").join("state.sqlite"),
+            b"",
+        )
+        .unwrap();
+        let artifact = scratch.join("evidence").join("rendered-trace.md");
+        assert!(ensure_output_path(&ctx, &artifact).is_ok());
+        let store = ctx.home.join(".t3").join("userdata").join("notes.md");
+        assert!(ensure_output_path(&ctx, &store).is_err());
+        // A scratch-looking name elsewhere under .t3 is still refused.
+        let lookalike = ctx.home.join(".t3").join("scratchpad").join("notes.md");
+        assert!(ensure_output_path(&ctx, &lookalike).is_err());
+        // A store read from inside ~/.t3 keeps its parent protected.
+        let source = ctx.home.join(".t3").join("rollout.jsonl");
+        ctx.protect_source(&source);
+        assert!(ensure_output_path(&ctx, &artifact).is_err());
+        let tree = ctx.home.join(".t3").join("worktrees").join("notes.md");
+        assert!(ensure_output_path(&ctx, &tree).is_err());
     }
     #[test]
     fn ls_keep_matches_any_term_and_t3_membership() {
