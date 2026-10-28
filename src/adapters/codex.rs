@@ -22,6 +22,54 @@ fn dirs(path: &Path) -> Vec<PathBuf> {
         .filter(|p| p.is_dir())
         .collect()
 }
+/// Two Codex homes can index the same thread and transcript (a copied or
+/// migrated state_5.sqlite). Keeps one row per id and transcript, preferring
+/// the home that holds the file; different transcripts under one id stay.
+fn one_row_per_transcript(ctx: &Context, rows: Vec<Session>) -> Vec<Session> {
+    // One spelling per file: expanded, canonical, and case-folded on Windows,
+    // used for both the transcript key and the home that owns it.
+    let norm = |raw: &str| {
+        let p = ctx.expand(raw);
+        let p = std::fs::canonicalize(&p)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .into_owned();
+        if cfg!(windows) { p.to_lowercase() } else { p }
+    };
+    let key = |r: &Session| {
+        let path = s(r, "path");
+        (
+            s(r, "id").to_owned(),
+            if path.is_empty() {
+                String::new()
+            } else {
+                norm(path)
+            },
+        )
+    };
+    let owns = |r: &Session, path: &str| Path::new(path).starts_with(norm(s(r, "home")));
+    let mut out: Vec<Session> = Vec::new();
+    let mut seen: HashMap<(String, String), usize> = HashMap::new();
+    for row in rows {
+        let k = key(&row);
+        if k.1.is_empty() {
+            out.push(row);
+            continue;
+        }
+        match seen.get(&k) {
+            Some(&i) => {
+                if !owns(&out[i], &k.1) && owns(&row, &k.1) {
+                    out[i] = row;
+                }
+            }
+            None => {
+                seen.insert(k, out.len());
+                out.push(row);
+            }
+        }
+    }
+    out
+}
 impl Codex {
     fn rows(
         &self,
@@ -174,7 +222,7 @@ impl StoreAdapter for Codex {
         if !subagents {
             out.retain(|r| s(r, "kind") != "subagent");
         }
-        Ok(out)
+        Ok(one_row_per_transcript(ctx, out))
     }
     fn resolve(&self, ctx: &Context, id: &str) -> Result<Vec<Session>> {
         let mut out = Vec::new();
@@ -205,7 +253,7 @@ impl StoreAdapter for Codex {
             }
             out.extend(rows);
         }
-        Ok(out)
+        Ok(one_row_per_transcript(ctx, out))
     }
     fn events<'a>(
         &self,
@@ -506,6 +554,80 @@ mod database_tests {
             texts.iter().any(|t| t.contains("compressed hello")),
             "{texts:?}"
         );
+    }
+    fn index_thread(home: &Path, id: &str, rollout: &Path) {
+        std::fs::create_dir_all(home).unwrap();
+        let con = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+        con.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE threads(id TEXT,cwd TEXT,created_at INTEGER,updated_at INTEGER,rollout_path TEXT,source TEXT,archived INTEGER,name TEXT);").unwrap();
+        let name = home.file_name().unwrap().to_string_lossy().into_owned();
+        con.execute(
+            "INSERT INTO threads VALUES(?,'/repo',1700000000,1700000001,?,'cli',1,?)",
+            [id, rollout.to_string_lossy().as_ref(), &name],
+        )
+        .unwrap();
+    }
+    #[test]
+    fn two_indexes_of_one_archived_rollout_resolve_to_one_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = dir.path().join(".codex");
+        let other = dir.path().join(".codex-work");
+        let archived = owner.join("archived_sessions");
+        std::fs::create_dir_all(&archived).unwrap();
+        let id = "019eb9ff-338d-79e2-8be3-8444bb8fb03a";
+        let rollout = archived.join(format!("rollout-2026-10-20T10-00-00-{id}.jsonl"));
+        std::fs::write(
+            &rollout,
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\"}}}}\n"),
+        )
+        .unwrap();
+        index_thread(&owner, id, &rollout);
+        // The second index names the same file through a different spelling.
+        index_thread(
+            &other,
+            id,
+            &owner
+                .join("archived_sessions/../archived_sessions")
+                .join(rollout.file_name().unwrap()),
+        );
+        let mut ctx = Context::from_env();
+        ctx.home = dir.path().into();
+        let rows = Codex.resolve(&ctx, id).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["home"], ctx.tilde(&owner));
+        let listed = Codex.sessions(&ctx, None, true).unwrap();
+        assert_eq!(
+            listed.iter().filter(|r| r["id"] == id).count(),
+            1,
+            "{listed:?}"
+        );
+        // Two different transcripts under one id stay two candidates.
+        let third = dir.path().join(".codex-old");
+        let elsewhere = third.join("archived_sessions");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let second = elsewhere.join(rollout.file_name().unwrap());
+        std::fs::write(&second, "{}\n").unwrap();
+        index_thread(&third, id, &second);
+        assert_eq!(Codex.resolve(&ctx, id).unwrap().len(), 2);
+    }
+    #[test]
+    fn the_home_holding_the_transcript_wins_when_it_comes_second() {
+        let dir = tempfile::tempdir().unwrap();
+        // ~/.codex is discovered first but only indexes ~/.codex-work's file.
+        let first = dir.path().join(".codex");
+        let owner = dir.path().join(".codex-work");
+        let archived = owner.join("archived_sessions");
+        std::fs::create_dir_all(&archived).unwrap();
+        let id = "019eb9ff-338d-79e2-8be3-8444bb8fb03b";
+        let rollout = archived.join(format!("rollout-2026-10-20T10-00-00-{id}.jsonl"));
+        std::fs::write(&rollout, "{}\n").unwrap();
+        index_thread(&first, id, &rollout);
+        index_thread(&owner, id, &rollout);
+        let mut ctx = Context::from_env();
+        ctx.home = dir.path().into();
+        let rows = Codex.resolve(&ctx, id).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["home"], ctx.tilde(&owner));
+        assert_eq!(rows[0]["title"], ".codex-work");
     }
     #[test]
     fn unindexed_rollout_has_legacy_absent_keys() {
