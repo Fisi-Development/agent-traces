@@ -215,3 +215,31 @@ fn hyphenated_query_matches_the_literal_term_not_its_separate_parts() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], ONE);
 }
+
+#[test]
+fn fields_project_each_match_like_ls() {
+    let t = store();
+    let ranked = json_rows(t.path(), &["find", "pelican", "--json"])
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let (stdout, code) = run(t.path(), &["find", "pelican", "--fields", "address,cwd"]);
+    assert_eq!(code, 0);
+    let expected = ranked
+        .iter()
+        .map(|id| format!("claude:{id}@testhost\t/w\n"))
+        .collect::<String>();
+    assert_eq!(stdout, expected);
+    let rows = json_rows(
+        t.path(),
+        &["find", "one pelican", "--fields", "id,address", "--json"],
+    );
+    assert_eq!(
+        rows,
+        [json!({"id": ONE, "address": format!("claude:{ONE}@testhost")})]
+    );
+    let (_, code) = run(t.path(), &["find", "pelican", "--fields", "nope"]);
+    assert_eq!(code, 2);
+    let (stdout, code) = run(t.path(), &["find", "absent-needle", "--fields", "address"]);
+    assert_eq!((stdout.as_str(), code), ("", 1));
+}

@@ -137,6 +137,11 @@ enum Command {
         /// Print only the number of matching sessions
         #[arg(long, conflicts_with = "json")]
         count: bool,
+        /// Print only these comma-separated fields for each matching session,
+        /// best first: one tab-separated line, or one JSON object with --json.
+        /// The same fields as `ls --fields`; `address` is harness:id@host
+        #[arg(long, value_delimiter = ',', conflicts_with_all = ["ids", "count", "query", "schema_version"])]
+        fields: Vec<String>,
         #[arg(long)]
         include_self: bool,
     },
@@ -498,10 +503,19 @@ fn execute_with_search(
             width,
             ids,
             count,
+            fields,
             include_self,
         } => {
             if common.format.v1() && *limit < 0 {
                 bail!("negative limits are invalid in v1");
+            }
+            for f in fields {
+                if !core::LS_FIELDS.contains(&f.as_str()) {
+                    bail!(
+                        "unknown field {f:?}; fields: {}",
+                        core::LS_FIELDS.join(", ")
+                    );
+                }
             }
             if !query.is_empty() {
                 let rows = core::gather(ctx, &common.filters(ctx, None)?)?;
@@ -519,6 +533,7 @@ fn execute_with_search(
                         width: *width,
                         ids: false,
                         count: false,
+                        fields: vec![],
                         include_self: *include_self,
                     };
                     let result = search::search(
@@ -605,7 +620,13 @@ fn execute_with_search(
                 &result.rows[..]
             };
             for m in shown {
-                if *ids {
+                if !fields.is_empty() {
+                    out.push_str(&rows_fields(
+                        std::slice::from_ref(&m.row),
+                        fields,
+                        common.format.json,
+                    ));
+                } else if *ids {
                     out.push_str(&(core::address(&m.row) + "\n"));
                 } else if common.format.json {
                     let mut row = core::legacy_row(&m.row);
