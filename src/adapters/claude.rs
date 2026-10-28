@@ -666,6 +666,54 @@ fn record_events(r: &Value) -> Vec<Event> {
                 out.push(e);
             }
         }
+        // Claude Code records the system prompt it sent once per request
+        // shape (--system-prompt-snapshot), and the injected context
+        // (loaded CLAUDE.md and AGENTS.md) as request blobs. Both are what the
+        // model saw as instructions; show them as notices.
+        "api-request-shape" => {
+            let text = r["shape"]["system"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|b| s(b, "type") == "text")
+                .map(|b| s(b, "text"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if !text.trim().is_empty() {
+                out.push(Event::new("notice", format!("[system prompt] {text}"), ts));
+            }
+        }
+        "api-request-blob" if s(&r["message"], "role") == "user" => {
+            let c = &r["message"]["content"];
+            let text = match c.as_array() {
+                Some(a) => a
+                    .iter()
+                    .filter(|b| s(b, "type") == "text")
+                    .map(|b| s(b, "text"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None => c.as_str().unwrap_or_default().to_owned(),
+            };
+            // Only the reminders: any user text after them is a conversation
+            // turn that show already prints.
+            static REMINDER: LazyLock<regex::Regex> = LazyLock::new(|| {
+                regex::Regex::new(r"(?s)<system-reminder>.*?</system-reminder>").unwrap()
+            });
+            if text.trim_start().starts_with("<system-reminder>") {
+                let reminders = REMINDER
+                    .find_iter(&text)
+                    .map(|m| m.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !reminders.is_empty() {
+                    out.push(Event::new(
+                        "notice",
+                        format!("[instructions] {reminders}"),
+                        ts,
+                    ));
+                }
+            }
+        }
         _ => {}
     }
     out
@@ -700,6 +748,48 @@ mod tests {
         assert_eq!(events[0].role, "result");
         assert!(events[0].error);
         assert_eq!(events[1].text, "hello\n[image]");
+    }
+    #[test]
+    fn instruction_snapshots_become_notices() {
+        let shape = record_events(
+            &json!({"type":"api-request-shape","timestamp":"2026-10-28T04:23:50.233Z",
+            "shape":{"system":[{"type":"text","text":"You are a test agent."},{"type":"text","text":"Follow the rules."}],"tools":[]}}),
+        );
+        assert_eq!(shape.len(), 1);
+        assert_eq!(shape[0].role, "notice");
+        assert_eq!(
+            shape[0].text,
+            "[system prompt] You are a test agent.\n\nFollow the rules."
+        );
+        let context = record_events(&json!({"type":"api-request-blob","hash":"h1",
+            "message":{"role":"user","content":[{"type":"text","text":"<system-reminder>\nContents of /w/AGENTS.md:\nBe brief.\n</system-reminder>"}]}}));
+        assert_eq!(context.len(), 1);
+        assert_eq!(context[0].role, "notice");
+        assert!(
+            context[0]
+                .text
+                .starts_with("[instructions] <system-reminder>")
+        );
+        assert!(context[0].text.contains("Be brief."));
+        // A reminder followed by the user's request keeps only the reminder.
+        let mixed = record_events(&json!({"type":"api-request-blob","hash":"h4",
+            "message":{"role":"user","content":[{"type":"text","text":"<system-reminder>env: linux</system-reminder>"},{"type":"text","text":"please fix the build"}]}}));
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(
+            mixed[0].text,
+            "[instructions] <system-reminder>env: linux</system-reminder>"
+        );
+        // Blobs that copy ordinary conversation turns are already shown.
+        assert!(
+            record_events(&json!({"type":"api-request-blob","hash":"h2",
+            "message":{"role":"user","content":[{"type":"text","text":"hello"}]}}))
+            .is_empty()
+        );
+        assert!(record_events(&json!({"type":"api-request-blob","hash":"h3",
+            "message":{"role":"assistant","content":[{"type":"text","text":"<system-reminder>x</system-reminder>"}]}})).is_empty());
+        assert!(
+            record_events(&json!({"type":"api-request-shape","shape":{"system":[]}})).is_empty()
+        );
     }
     #[test]
     fn discovery_children_cache() {
