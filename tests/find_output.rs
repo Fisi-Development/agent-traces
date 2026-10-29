@@ -243,3 +243,64 @@ fn fields_project_each_match_like_ls() {
     let (stdout, code) = run(t.path(), &["find", "absent-needle", "--fields", "address"]);
     assert_eq!((stdout.as_str(), code), ("", 1));
 }
+
+#[test]
+fn hit_fields_print_one_line_per_hit_with_session_fields_repeated() {
+    let t = store();
+    let (stdout, code) = run(
+        t.path(),
+        &["find", "one pelican", "--fields", "id,hit.role,hit.text"],
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, format!("{ONE}\tprompt\tone pelican\n"));
+    // The same hits, timestamps and order as the hits of `find --json`.
+    let legacy = json_rows(t.path(), &["find", "pelican run", "--json", "--hits", "2"]);
+    let many = legacy.iter().find(|r| r["id"] == MANY).unwrap();
+    let rows = json_rows(
+        t.path(),
+        &[
+            "find",
+            "pelican run",
+            "--json",
+            "--hits",
+            "2",
+            "--fields",
+            "address,hit.ts",
+        ],
+    );
+    let address = format!("claude:{MANY}@testhost");
+    let expected = many["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| json!({"address": address, "hit.ts": h["ts"]}))
+        .collect::<Vec<_>>();
+    assert_eq!(expected.len(), 2);
+    assert_eq!(rows, expected);
+    // --width cuts the hit text as it does in the listing.
+    let (stdout, _) = run(
+        t.path(),
+        &["find", "TAILMARK", "--fields", "hit.text", "--width", "40"],
+    );
+    assert!(
+        stdout.contains("TAILMARK") && stdout.len() < 80,
+        "{stdout:?}"
+    );
+    // A budget that hides every hit prints no line for the session.
+    for budget in ["0", "-1"] {
+        let (stdout, code) = run(
+            t.path(),
+            &[
+                "find",
+                "one pelican",
+                "--hits",
+                budget,
+                "--fields",
+                "id,hit.text",
+            ],
+        );
+        assert_eq!((stdout.as_str(), code), ("", 0), "--hits {budget}");
+    }
+    let (_, code) = run(t.path(), &["find", "pelican", "--fields", "hit.nope"]);
+    assert_eq!(code, 2);
+}

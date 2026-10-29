@@ -139,7 +139,9 @@ enum Command {
         count: bool,
         /// Print only these comma-separated fields for each matching session,
         /// best first: one tab-separated line, or one JSON object with --json.
-        /// The same fields as `ls --fields`; `address` is harness:id@host
+        /// The same fields as `ls --fields`; `address` is harness:id@host.
+        /// hit.ts, hit.role and hit.text print one line per hit instead,
+        /// up to --hits [default: 3], with text cut to --width
         #[arg(long, value_delimiter = ',', conflicts_with_all = ["ids", "count", "query", "schema_version"])]
         fields: Vec<String>,
         #[arg(long)]
@@ -301,6 +303,8 @@ fn cell(v: &Value) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+/// Per-hit fields `find --fields` takes beside the session fields.
+const HIT_FIELDS: &[&str] = &["hit.ts", "hit.role", "hit.text"];
 fn rows_fields(rows: &[Session], fields: &[String], json: bool) -> String {
     rows.iter()
         .map(|r| {
@@ -510,10 +514,11 @@ fn execute_with_search(
                 bail!("negative limits are invalid in v1");
             }
             for f in fields {
-                if !core::LS_FIELDS.contains(&f.as_str()) {
+                if !core::LS_FIELDS.contains(&f.as_str()) && !HIT_FIELDS.contains(&f.as_str()) {
                     bail!(
-                        "unknown field {f:?}; fields: {}",
-                        core::LS_FIELDS.join(", ")
+                        "unknown field {f:?}; fields: {}, {}",
+                        core::LS_FIELDS.join(", "),
+                        HIT_FIELDS.join(", ")
                     );
                 }
             }
@@ -619,8 +624,39 @@ fn execute_with_search(
             } else {
                 &result.rows[..]
             };
+            let per_hit = fields.iter().any(|f| HIT_FIELDS.contains(&f.as_str()));
             for m in shown {
-                if !fields.is_empty() {
+                if per_hit {
+                    let row = core::legacy_row(&m.row);
+                    let shown = limit_len(m.hits.len(), hits.unwrap_or(3));
+                    // A session matched only by title has no hits; keep it as one line.
+                    // A --hits budget that hides every hit prints nothing for it.
+                    let events = if m.hits.is_empty() {
+                        vec![None]
+                    } else {
+                        m.hits.iter().take(shown).map(Some).collect::<Vec<_>>()
+                    };
+                    for e in events {
+                        let values = fields.iter().map(|f| {
+                            let value = match (f.as_str(), e) {
+                                ("hit.ts", Some(e)) => json!(e.ts.map(iso)),
+                                ("hit.role", Some(e)) => json!(e.role),
+                                ("hit.text", Some(e)) => {
+                                    json!(redact(&search::snippet(&event_text(e), terms, *width)))
+                                }
+                                (f, _) if HIT_FIELDS.contains(&f) => Value::Null,
+                                (f, _) => core::ls_field(&row, f),
+                            };
+                            (f.clone(), value)
+                        });
+                        let line = if common.format.json {
+                            Value::Object(values.collect()).to_string()
+                        } else {
+                            values.map(|(_, v)| cell(&v)).collect::<Vec<_>>().join("\t")
+                        };
+                        out.push_str(&(line + "\n"));
+                    }
+                } else if !fields.is_empty() {
                     out.push_str(&rows_fields(
                         std::slice::from_ref(&m.row),
                         fields,
