@@ -11,6 +11,83 @@ use serde_json::{Value, json};
 use std::{collections::HashSet, path::PathBuf};
 pub struct T3;
 impl T3 {
+    /// Read all local threads and pending request kinds in one consistent snapshot.
+    pub fn snapshot(ctx: &Context) -> Result<Value> {
+        let con = Self::open_v2(ctx)?.ok_or_else(|| anyhow::anyhow!("T3 v2 store not found"))?;
+        con.execute_batch("BEGIN")?;
+        let rows = db::query(
+            &con,
+            "select t.thread_id,t.title,r.status,r.run_id as latest_run_id
+             from orchestration_v2_projection_threads t
+             left join orchestration_v2_projection_runs r on r.run_id=(
+               select run_id from orchestration_v2_projection_runs where thread_id=t.thread_id
+               order by ordinal desc,run_id desc limit 1)
+             where t.deleted_at is null order by t.thread_id",
+            &[],
+        )?;
+        let pending = db::query(&con,
+            "select q.thread_id,q.kind from orchestration_v2_projection_runtime_requests q
+             join orchestration_v2_projection_threads t on t.thread_id=q.thread_id
+             where t.deleted_at is null and q.status='pending'
+             union
+             select i.thread_id,'user_input' as kind from orchestration_v2_projection_turn_items i
+             join orchestration_v2_projection_runs r on r.run_id=i.run_id and r.thread_id=i.thread_id
+             join orchestration_v2_projection_threads t on t.thread_id=i.thread_id
+             where t.deleted_at is null and i.type='secret_request' and i.status='waiting'
+               and r.status in ('preparing','queued','starting','running','waiting')
+             order by 1,2", &[])?;
+        let mut requests = serde_json::Map::new();
+        for row in pending {
+            requests
+                .entry(s(&row, "thread_id").to_owned())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .unwrap()
+                .push(row["kind"].clone());
+        }
+        let threads: Vec<Value> = rows.into_iter().map(|row| {
+            json!({"thread_id":row["thread_id"],"title":row["title"],
+                "status":if row["status"].is_null() { json!("idle") } else { row["status"].clone() },
+                "latest_run_id":row["latest_run_id"],
+                "link":format!("t3-thread://v1/{}",s(&row,"thread_id"))})
+        }).collect();
+        Ok(json!({"threads":threads,"requests":requests}))
+    }
+
+    /// Export only the latest user/assistant text, redacted before bounding it.
+    pub fn summary(ctx: &Context, thread: &str) -> Result<Value> {
+        let con = Self::open_v2(ctx)?.ok_or_else(|| anyhow::anyhow!("T3 v2 store not found"))?;
+        con.execute_batch("BEGIN")?;
+        let rows = db::query(
+            &con,
+            "select thread_id from orchestration_v2_projection_threads where thread_id=? and deleted_at is null",
+            &[json!(thread)],
+        )?;
+        anyhow::ensure!(!rows.is_empty(), "no T3 thread matches {thread:?}");
+        let message = db::query(
+            &con,
+            "select payload_json from orchestration_v2_projection_messages
+             where thread_id=? and role in ('user','assistant')
+             order by updated_at desc,message_id desc limit 1",
+            &[json!(thread)],
+        )?
+        .pop();
+        let text = match message {
+            Some(row) => {
+                let payload: Value = serde_json::from_str(s(&row, "payload_json"))?;
+                let collapsed = s(&payload, "text")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                crate::util::redact(&collapsed)
+                    .chars()
+                    .take(500)
+                    .collect::<String>()
+            }
+            None => String::new(),
+        };
+        Ok(json!({"thread_id":thread,"text":text}))
+    }
     /// Inspect orchestration metadata without exporting message or file payloads.
     pub fn state(ctx: &Context, thread: &str) -> Result<Value> {
         let con = Self::open_v2(ctx)?.ok_or_else(|| anyhow::anyhow!("T3 v2 store not found"))?;

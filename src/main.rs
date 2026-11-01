@@ -231,6 +231,17 @@ enum Command {
 }
 #[derive(Subcommand)]
 enum T3Command {
+    /// Read all local T3 threads and pending request kinds
+    Snapshot {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read a bounded redacted summary of a thread's latest message
+    Summary {
+        thread_id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Read a thread's branch, worktree, latest run and latest checkpoint
     State {
         thread_id: String,
@@ -423,6 +434,29 @@ fn execute_with_search(
     searched: Option<search::SearchResult>,
 ) -> Result<CommandOutput> {
     match cmd {
+        Command::T3 {
+            command: command @ (T3Command::Snapshot { .. } | T3Command::Summary { .. }),
+        } => {
+            let (value, json) = match command {
+                T3Command::Snapshot { json } => {
+                    (agent_traces::adapters::t3::T3::snapshot(ctx)?, json)
+                }
+                T3Command::Summary { thread_id, json } => (
+                    agent_traces::adapters::t3::T3::summary(ctx, thread_id)?,
+                    json,
+                ),
+                _ => unreachable!(),
+            };
+            let text = if *json {
+                value.to_string()
+            } else {
+                serde_json::to_string_pretty(&value)?
+            };
+            Ok(CommandOutput {
+                stdout: redact(&text) + "\n",
+                ..Default::default()
+            })
+        }
         Command::T3 {
             command: T3Command::State { thread_id, json },
         } => {

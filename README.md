@@ -84,11 +84,23 @@ address. It emits one JSON object; without `--json`, it pretty-prints that
 object. Missing run/checkpoint metadata is null. A missing or ambiguous thread
 is an error; it never guesses between threads.
 
+
+`t3 snapshot` returns one object with `threads` and `requests`. It includes
+archived and child threads across all projects, uses `idle` for threads with
+no runs, and maps waiting secret requests on live runs to `user_input`.
+It exports no message or request payloads. `t3 summary THREAD` returns
+`{"thread_id":"…","text":"…"}`, collapses whitespace, and redacts before
+truncating. An existing thread without messages has empty text; unknown or
+deleted threads fail. Both commands read only the local T3 v2 store and fail
+on missing required schema. Omit `--json` for pretty JSON.
+
 | Command | Purpose |
 | --- | --- |
 | `where` | Locate stores and describe coverage |
 | `ls` | List, filter, project, or count sessions by date, harness, cwd, and keyword |
 | `find QUERY` | Rank matching sessions with BM25 |
+| `t3 snapshot --json` | Read all undeleted local threads, latest run state and unique pending request kinds |
+| `t3 summary THREAD --json` | Read the latest user/assistant text for an exact full thread id, redacted and capped at 500 Unicode characters |
 | `t3 state THREAD` | Read T3 v2 branch, worktree, latest run and checkpoint metadata |
 | `touched PATH` | Locate recorded file edits |
 | `commit REV` | Report local session evidence for a git commit |
