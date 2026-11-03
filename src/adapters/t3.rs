@@ -144,7 +144,7 @@ impl T3 {
     fn path_v2(ctx: &Context) -> PathBuf {
         Self::path(ctx).with_file_name("statev2.sqlite")
     }
-    fn open_v2(ctx: &Context) -> Result<Option<rusqlite::Connection>> {
+    pub(super) fn open_v2(ctx: &Context) -> Result<Option<rusqlite::Connection>> {
         let path = Self::path_v2(ctx);
         if !path.exists() {
             return Ok(None);

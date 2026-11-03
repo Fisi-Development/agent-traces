@@ -231,6 +231,10 @@ enum Command {
 }
 #[derive(Subcommand)]
 enum T3Command {
+    /// List or count local thread metadata
+    Threads(agent_traces::adapters::t3_query::ThreadsArgs),
+    /// Read or count local orchestration events
+    Events(agent_traces::adapters::t3_query::EventsArgs),
     /// Read all local T3 threads and pending request kinds
     Snapshot {
         #[arg(long)]
@@ -434,37 +438,19 @@ fn execute_with_search(
     searched: Option<search::SearchResult>,
 ) -> Result<CommandOutput> {
     match cmd {
-        Command::T3 {
-            command: command @ (T3Command::Snapshot { .. } | T3Command::Summary { .. }),
-        } => {
+        Command::T3 { command } => {
+            use agent_traces::adapters::{t3::T3, t3_query};
             let (value, json) = match command {
-                T3Command::Snapshot { json } => {
-                    (agent_traces::adapters::t3::T3::snapshot(ctx)?, json)
-                }
-                T3Command::Summary { thread_id, json } => (
-                    agent_traces::adapters::t3::T3::summary(ctx, thread_id)?,
-                    json,
-                ),
-                _ => unreachable!(),
+                T3Command::Threads(opts) => (t3_query::threads(ctx, opts)?, opts.json),
+                T3Command::Events(opts) => (t3_query::events(ctx, opts)?, opts.json),
+                T3Command::Snapshot { json } => (T3::snapshot(ctx)?, *json),
+                T3Command::Summary { thread_id, json } => (T3::summary(ctx, thread_id)?, *json),
+                T3Command::State { thread_id, json } => (T3::state(ctx, thread_id)?, *json),
             };
-            let text = if *json {
+            let text = if json {
                 value.to_string()
             } else {
                 serde_json::to_string_pretty(&value)?
-            };
-            Ok(CommandOutput {
-                stdout: redact(&text) + "\n",
-                ..Default::default()
-            })
-        }
-        Command::T3 {
-            command: T3Command::State { thread_id, json },
-        } => {
-            let state = agent_traces::adapters::t3::T3::state(ctx, thread_id)?;
-            let text = if *json {
-                state.to_string()
-            } else {
-                serde_json::to_string_pretty(&state)?
             };
             Ok(CommandOutput {
                 stdout: redact(&text) + "\n",

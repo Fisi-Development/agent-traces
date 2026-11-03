@@ -38,3 +38,5 @@ pub mod codex;
 pub mod grok;
 pub mod opencode;
 pub mod t3;
+
+pub mod t3_query;

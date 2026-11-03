@@ -84,6 +84,23 @@ address. It emits one JSON object; without `--json`, it pretty-prints that
 object. Missing run/checkpoint metadata is null. A missing or ambiguous thread
 is an error; it never guesses between threads.
 
+From 0.2.24, `t3 threads` lists local thread metadata, newest update first,
+excluding deleted threads unless `--include-deleted` is set. Filter by project,
+creator, source, settled state, archive state, or `--since`, then apply `--limit`.
+For example, `agent-traces t3 threads --count-by creation_source --json` groups
+threads by creation source, including a null bucket.
+
+`t3 events` reads orchestration events in sequence order, with a default limit
+of 200. Repeat `--type` for exact types or a trailing `*` prefix. Actor, thread,
+kind, time bounds, and `--after-seq` narrow the results. `--count-by` counts all
+matching events regardless of the limit. For example,
+`agent-traces t3 events --type thread.settled --actor client --count-by creation_source --json`.
+T3 indexes events by sequence and by thread, so `--thread` and `--after-seq` are
+fast; a type, actor or time filter without them reads the whole events table,
+which on a multi-gigabyte store takes seconds to minutes.
+Payloads are omitted unless `--payload` is set, then redacted and capped at
+2000 characters. Both commands use a read-only snapshot. Omit `--json` for
+pretty JSON.
 
 `t3 snapshot` returns one object with `threads` and `requests`. It includes
 archived and child threads across all projects, uses `idle` for threads with
@@ -101,6 +118,8 @@ on missing required schema. Omit `--json` for pretty JSON.
 | `find QUERY` | Rank matching sessions with BM25 |
 | `t3 snapshot --json` | Read all undeleted local threads, latest run state and unique pending request kinds |
 | `t3 summary THREAD --json` | Read the latest user/assistant text for an exact full thread id, redacted and capped at 500 Unicode characters |
+| `t3 threads [filters]` | List thread metadata or group counts with `--count-by` |
+| `t3 events [filters]` | Read orchestration events or group counts with `--count-by` |
 | `t3 state THREAD` | Read T3 v2 branch, worktree, latest run and checkpoint metadata |
 | `touched PATH` | Locate recorded file edits |
 | `commit REV` | Report local session evidence for a git commit |
