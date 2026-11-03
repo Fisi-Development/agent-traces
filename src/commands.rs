@@ -842,6 +842,25 @@ where
     static CORRECTION: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)^\s*(?:no\b|nope\b|stop\b|wait\b|hold on|that'?s (?:not|wrong)|you (?:didn'?t|did not|missed|forgot|never)|wrong\b|why did you|don'?t\b|undo\b|revert\b|this is (?:wrong|broken)|it (?:still )?(?:doesn'?t|does not) work)").unwrap()
     });
+    static INLINE_CORRECTION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(concat!(
+            r"(?i)\b(?:",
+            r"shouldn'?t (?:it|this|that|we|you|there|they) (?:be|have)|",
+            r"(?:it|you|that) did do that|",
+            r"because I asked (?:for|you)|",
+            r"I (?:asked|told) you|",
+            r"didn'?t I (?:say|ask|tell)|",
+            r"(?:that'?s|this is|it'?s) not what I|",
+            r"not what I (?:asked|meant|wanted|said)|",
+            r"(?:seem|seems) to be (?:conflating|confusing|mixing)|",
+            r"you(?:'re| are) (?:conflating|confusing|mixing up|ignoring)|",
+            r"(?:you were|weren'?t you) supposed to|",
+            r"you shouldn'?t have|",
+            r"(?:why|how come) (?:are|did|didn'?t|is|isn'?t|aren'?t|do|does|would) you\b",
+            r")\b",
+        ))
+        .unwrap()
+    });
     let mut scored = vec![];
     let mut total = 0;
     for item in rows_events {
@@ -880,7 +899,30 @@ where
         let co = prompts
             .iter()
             .skip(1)
-            .filter(|e| window.contains(e.ts) && CORRECTION.is_match(&e.text))
+            .filter(|e| {
+                let trimmed = e.text.trim_start();
+                if !window.contains(e.ts)
+                    || trimmed.starts_with('<')
+                    || trimmed.starts_with("[telepathica]")
+                    || trimmed.starts_with("[agent-mailbox]")
+                {
+                    return false;
+                }
+                let end = e
+                    .text
+                    .char_indices()
+                    .nth(400)
+                    .map_or(e.text.len(), |(i, _)| i);
+                let end = if end < e.text.len()
+                    && !e.text[end..].starts_with(char::is_whitespace)
+                    && !e.text[..end].ends_with(char::is_whitespace)
+                {
+                    e.text[..end].rfind(char::is_whitespace).unwrap_or(0)
+                } else {
+                    end
+                };
+                CORRECTION.is_match(&e.text) || INLINE_CORRECTION.is_match(&e.text[..end])
+            })
             .copied()
             .collect::<Vec<_>>();
         let prompts = prompts
@@ -1229,6 +1271,65 @@ mod tests {
             value["samples"],
             json!(["compact aborted", "failed", "Nope, wrong"])
         );
+    }
+    #[test]
+    fn failures_question_form_corrections_and_notices() {
+        let ctx = Context::from_env();
+        for (text, expected) in [
+            ("shouldn't it be one HUB?", 1),
+            ("it did do that tho", 1),
+            (
+                "Are you using terra for sub agents because I asked for it?",
+                1,
+            ),
+            ("We seem to be conflating archived and settled", 1),
+            ("Can you also add tests for the parser?", 0),
+            ("Why does the build use two target dirs?", 0),
+            ("Let's ship it", 0),
+            ("<task-notification>why did you stop</task-notification>", 0),
+            (
+                "[telepathica] Message m_1 (question) from x. why did you",
+                0,
+            ),
+            ("  <command-name>no stop</command-name>", 0),
+            ("  [agent-mailbox] you should have waited", 0),
+            ("No, you should have waited", 1),
+            ("you should have access now", 0),
+            ("you shouldn't have deleted it", 1),
+            ("because I asked Sol to run it", 0),
+            ("fooyou should have waited", 0),
+        ] {
+            let rows = [(
+                row(),
+                vec![
+                    Event::new("prompt", "No first request", None),
+                    Event::new("prompt", text, None),
+                ],
+            )];
+            let out = failures(&ctx, &rows, 0, 10, true, None, EventWindow::default());
+            let value: Value = serde_json::from_str(out.stdout.trim()).unwrap();
+            assert_eq!(value["corrections"], expected, "{text}");
+        }
+        for (text, expected) in [
+            (format!("{} you shouldn't have waited", "é".repeat(370)), 1),
+            (format!("{} you shouldn't have waited", "é".repeat(400)), 0),
+            (
+                format!("{} you shouldn't haveaccess now", "x".repeat(381)),
+                0,
+            ),
+            (format!("{} you shouldn't have waited", "x".repeat(381)), 1),
+        ] {
+            let rows = [(
+                row(),
+                vec![
+                    Event::new("prompt", "start", None),
+                    Event::new("prompt", text, None),
+                ],
+            )];
+            let out = failures(&ctx, &rows, 0, 10, true, None, EventWindow::default());
+            let value: Value = serde_json::from_str(out.stdout.trim()).unwrap();
+            assert_eq!(value["corrections"], expected);
+        }
     }
     #[test]
     fn handoff_has_numerical_ticket_order_and_deduplicated_files() {

@@ -429,13 +429,54 @@ fn load_events<'a>(
     })
 }
 
-fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
-    execute_with_search(ctx, cmd, None)
+fn output_text(text: &str, windows: bool, v1: bool) -> String {
+    if windows && !v1 {
+        text.replace("\n", "\r\n")
+    } else {
+        text.to_owned()
+    }
 }
-fn execute_with_search(
+
+/// A failed write to stdout: main exits 0 on a closed pipe and 1 otherwise, as it always has.
+#[derive(Debug)]
+struct StdoutWrite(io::Error);
+impl std::fmt::Display for StdoutWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for StdoutWrite {}
+
+fn stdout_error(error: io::Error) -> anyhow::Error {
+    StdoutWrite(error).into()
+}
+
+/// The exit code for a stdout write failure, or None when the error is something else.
+fn stdout_exit_code(error: &anyhow::Error) -> Option<i32> {
+    error.downcast_ref::<StdoutWrite>().map(|w| {
+        if w.0.kind() == io::ErrorKind::BrokenPipe {
+            0
+        } else {
+            1
+        }
+    })
+}
+
+fn execute(ctx: &Context, cmd: &Command) -> Result<CommandOutput> {
+    execute_with_writers(
+        ctx,
+        cmd,
+        None,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    )
+}
+fn execute_with_writers(
     ctx: &Context,
     cmd: &Command,
     searched: Option<search::SearchResult>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
 ) -> Result<CommandOutput> {
     match cmd {
         Command::T3 { command } => {
@@ -544,7 +585,6 @@ fn execute_with_search(
             }
             if !query.is_empty() {
                 let rows = core::gather(ctx, &common.filters(ctx, None)?)?;
-                let mut output = CommandOutput::default();
                 let mut found = false;
                 for q in query {
                     let command = Command::Find {
@@ -577,29 +617,38 @@ fn execute_with_search(
                         },
                     )?;
                     let total = result.total;
-                    let part = execute_with_search(ctx, &command, Some(result))?;
+                    let part = execute_with_writers(ctx, &command, Some(result), stdout, stderr)?;
                     found |= part.exit_code == 0;
-                    if common.format.json {
+                    let group = if common.format.json {
                         let matches = part
                             .stdout
                             .lines()
                             .map(serde_json::from_str::<Value>)
                             .collect::<std::result::Result<Vec<_>, _>>()?;
-                        output.stdout.push_str(&format!(
-                            "{}\n",
-                            json!({"query":q,"total":total,"matches":matches})
-                        ));
+                        format!("{}\n", json!({"query":q,"total":total,"matches":matches}))
                     } else {
-                        output
-                            .stdout
-                            .push_str(&format!("Query: {q}\n{}", part.stdout));
-                    }
-                    output
-                        .stderr
-                        .push_str(&format!("Query: {q}\n{}", part.stderr));
+                        format!("Query: {q}\n{}", part.stdout)
+                    };
+                    stdout
+                        .write_all(
+                            output_text(&group, cfg!(windows), common.format.v1()).as_bytes(),
+                        )
+                        .and_then(|()| stdout.flush())
+                        .map_err(stdout_error)?;
+                    let _ = stderr.write_all(
+                        output_text(
+                            &format!("Query: {q}\n{}", part.stderr),
+                            cfg!(windows),
+                            common.format.v1(),
+                        )
+                        .as_bytes(),
+                    );
+                    let _ = stderr.flush();
                 }
-                output.exit_code = if found { 0 } else { 1 };
-                return Ok(output);
+                return Ok(CommandOutput {
+                    exit_code: if found { 0 } else { 1 },
+                    ..Default::default()
+                });
             }
             let options = SearchOptions {
                 terms: terms.clone(),
@@ -1146,6 +1195,12 @@ fn main() {
     let mut out = match execute(&ctx, &cmd) {
         Ok(out) => out,
         Err(e) => {
+            if let Some(code) = stdout_exit_code(&e) {
+                if code != 0 {
+                    eprintln!("{e}");
+                }
+                std::process::exit(code);
+            }
             let (status, code) = match e.downcast_ref::<SelectionError>() {
                 Some(SelectionError::NotFound(_)) => ("not_found", 1),
                 Some(SelectionError::Ambiguous(_)) => ("error", 4),
@@ -1226,17 +1281,198 @@ fn main() {
             ));
         }
     }
-    if cfg!(windows) && !v1 {
-        out.stdout = out.stdout.replace("\n", "\r\n");
-        out.stderr = out.stderr.replace("\n", "\r\n");
-    }
+    out.stdout = output_text(&out.stdout, cfg!(windows), v1);
+    out.stderr = output_text(&out.stderr, cfg!(windows), v1);
     let _ = io::stderr().write_all(out.stderr.as_bytes());
     if let Err(e) = io::stdout().write_all(out.stdout.as_bytes()) {
-        if e.kind() == io::ErrorKind::BrokenPipe {
-            std::process::exit(0);
+        let e = stdout_error(e);
+        let code = stdout_exit_code(&e).unwrap_or(1);
+        if code != 0 {
+            eprintln!("{e}");
         }
-        eprintln!("{e}");
-        std::process::exit(1);
+        std::process::exit(code);
     }
     std::process::exit(out.exit_code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Capture {
+        bytes: Vec<u8>,
+        flushes: Vec<usize>,
+    }
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes.push(self.bytes.len());
+            Ok(())
+        }
+    }
+
+    struct FailingWriter {
+        on_flush: bool,
+        kind: io::ErrorKind,
+    }
+    impl Write for FailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.on_flush {
+                Ok(bytes.len())
+            } else {
+                Err(self.kind.into())
+            }
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            if self.on_flush {
+                Err(self.kind.into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn output_line_endings_follow_platform_and_schema() {
+        assert_eq!(output_text("a\nb\n", true, false), "a\r\nb\r\n");
+        assert_eq!(output_text("a\nb\n", true, true), "a\nb\n");
+        assert_eq!(output_text("a\nb\n", false, false), "a\nb\n");
+        assert_eq!(output_text("a\nb\n", false, true), "a\nb\n");
+    }
+
+    #[test]
+    fn grouped_find_streams_identical_groups_in_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = Context::from_env();
+        ctx.home = temp.path().to_path_buf();
+        ctx.cache_dir = temp.path().join("cache");
+        let store = temp.path().join(".claude/projects/test");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("aaaaaaaa-1111-4111-8111-111111111111.jsonl"),
+            format!("{}\n", json!({"type":"user","cwd":"/test","timestamp":"2026-10-01T12:00:00Z","message":{"content":"pelican fixture"}}))).unwrap();
+        for json_output in [false, true] {
+            for queries in [["pelican", "absent-needle"], ["absent-one", "absent-two"]] {
+                let mut expected_out = String::new();
+                let mut expected_err = String::new();
+                let mut out_boundaries = Vec::new();
+                let mut err_boundaries = Vec::new();
+                let mut found = false;
+                // Reconstruct the original buffered bytes from single-query output.
+                for query in queries {
+                    let mut args = vec![
+                        "agent-traces",
+                        "find",
+                        query,
+                        "--hits",
+                        "0",
+                        "--harness",
+                        "claude",
+                        "--cwd",
+                        "/test",
+                    ];
+                    if json_output {
+                        args.push("--json");
+                    }
+                    let cmd = Cli::parse_from(args).command.unwrap();
+                    let part =
+                        execute_with_writers(&ctx, &cmd, None, &mut Vec::new(), &mut Vec::new())
+                            .unwrap();
+                    assert_eq!(part.exit_code, if query == "pelican" { 0 } else { 1 });
+                    found |= part.exit_code == 0;
+                    if json_output {
+                        let matches = part
+                            .stdout
+                            .lines()
+                            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+                            .collect::<Vec<_>>();
+                        let total = matches.len();
+                        expected_out.push_str(&output_text(
+                            &format!(
+                                "{}\n",
+                                json!({"query":query,"total":total,"matches":matches})
+                            ),
+                            cfg!(windows),
+                            false,
+                        ));
+                    } else {
+                        expected_out.push_str(&output_text(
+                            &format!("Query: {query}\n{}", part.stdout),
+                            cfg!(windows),
+                            false,
+                        ));
+                    }
+                    expected_err.push_str(&output_text(
+                        &format!("Query: {query}\n{}", part.stderr),
+                        cfg!(windows),
+                        false,
+                    ));
+                    out_boundaries.push(expected_out.len());
+                    err_boundaries.push(expected_err.len());
+                }
+                let mut args = vec![
+                    "agent-traces",
+                    "find",
+                    "-q",
+                    queries[0],
+                    "-q",
+                    queries[1],
+                    "--hits",
+                    "0",
+                    "--harness",
+                    "claude",
+                    "--cwd",
+                    "/test",
+                ];
+                if json_output {
+                    args.push("--json");
+                }
+                let cmd = Cli::parse_from(args).command.unwrap();
+                let mut stdout = Capture::default();
+                let mut stderr = Capture::default();
+                let result =
+                    execute_with_writers(&ctx, &cmd, None, &mut stdout, &mut stderr).unwrap();
+                assert_eq!(stdout.bytes, expected_out.as_bytes());
+                assert_eq!(stderr.bytes, expected_err.as_bytes());
+                assert_eq!(stdout.flushes, out_boundaries);
+                assert_eq!(stderr.flushes, err_boundaries);
+                assert!(result.stdout.is_empty());
+                assert!(result.stderr.is_empty());
+                assert_eq!(result.exit_code, if found { 0 } else { 1 });
+                for on_flush in [false, true] {
+                    let mut broken = FailingWriter {
+                        on_flush,
+                        kind: io::ErrorKind::BrokenPipe,
+                    };
+                    let error =
+                        execute_with_writers(&ctx, &cmd, None, &mut broken, &mut Vec::new())
+                            .err()
+                            .unwrap();
+                    assert_eq!(stdout_exit_code(&error), Some(0));
+                    let mut failed = FailingWriter {
+                        on_flush,
+                        kind: io::ErrorKind::PermissionDenied,
+                    };
+                    let error =
+                        execute_with_writers(&ctx, &cmd, None, &mut failed, &mut Vec::new())
+                            .err()
+                            .unwrap();
+                    // Same as the buffered path before streaming: print the error, exit 1.
+                    assert_eq!(stdout_exit_code(&error), Some(1));
+                    assert_eq!(stdout_exit_code(&anyhow::anyhow!("other failure")), None);
+                    let mut failed_stderr = FailingWriter {
+                        on_flush,
+                        kind: io::ErrorKind::BrokenPipe,
+                    };
+                    let result =
+                        execute_with_writers(&ctx, &cmd, None, &mut Vec::new(), &mut failed_stderr)
+                            .unwrap();
+                    assert_eq!(result.exit_code, if found { 0 } else { 1 });
+                }
+            }
+        }
+    }
 }
