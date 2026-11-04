@@ -138,7 +138,15 @@ impl StoreAdapter for OpenCode {
                 }
             };
             match s(&r, "type") {
-                "user" => out.push(Event::new("prompt", s(&d, "text"), ts)),
+                "user" => {
+                    let text = s(&d, "text");
+                    let (role, cleaned) = crate::adapters::claude::classify_claude_text(text, &d);
+                    let machine = role != "prompt" || d["synthetic"] == true;
+                    let mut event = Event::new("prompt", text, ts);
+                    event.user_turn =
+                        Some((if machine { text.to_owned() } else { cleaned }, machine));
+                    out.push(event);
+                }
                 "assistant" => {
                     for b in d["content"].as_array().into_iter().flatten() {
                         match s(b, "type") {

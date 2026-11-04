@@ -11,6 +11,47 @@ use serde_json::{Value, json};
 use std::{collections::HashSet, path::PathBuf};
 pub struct T3;
 impl T3 {
+    pub(crate) fn prompt_links(ctx: &Context) -> Result<Vec<Value>> {
+        let Some(con) = Self::open_v2(ctx)? else {
+            return Ok(vec![]);
+        };
+        db::query(
+            &con,
+            "select thread_id,driver,json_extract(payload_json,'$.nativeThreadRef.nativeId') as native_id from orchestration_v2_projection_provider_threads",
+            &[],
+        )
+    }
+
+    pub(crate) fn user_turns(ctx: &Context, row: &Session) -> Result<Vec<Event>> {
+        let v2 = s(row, "path").starts_with(&format!("{}#thread=", ctx.tilde(&Self::path_v2(ctx))));
+        let path = if v2 {
+            Self::path_v2(ctx)
+        } else {
+            Self::path(ctx)
+        };
+        let con = db::open(ctx, "t3", &path)?;
+        let sql = if v2 {
+            "select created_at,payload_json from orchestration_v2_projection_messages where thread_id=? and role='user' order by created_at,rowid"
+        } else {
+            "select created_at,text from projection_thread_messages where thread_id=? and role='user' order by created_at,rowid"
+        };
+        db::query(&con, sql, &[row["id"].clone()])?
+            .into_iter()
+            .map(|m| {
+                let data: Value = if v2 {
+                    serde_json::from_str(s(&m, "payload_json"))?
+                } else {
+                    m.clone()
+                };
+                let typed = data["createdBy"] == "user"
+                    && matches!(s(&data, "creationSource"), "web" | "desktop" | "mobile");
+                let mut event = Event::new("prompt", s(&data, "text"), parse_ts(&m["created_at"]));
+                event.user_turn = Some((event.text.clone(), !typed));
+                Ok(event)
+            })
+            .collect()
+    }
+
     /// Read all local threads and pending request kinds in one consistent snapshot.
     pub fn snapshot(ctx: &Context) -> Result<Value> {
         let con = Self::open_v2(ctx)?.ok_or_else(|| anyhow::anyhow!("T3 v2 store not found"))?;

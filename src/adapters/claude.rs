@@ -535,6 +535,26 @@ impl StoreAdapter for Claude {
             }),
         ))
     }
+    fn prompt_events(&self, ctx: &Context, row: &Session) -> Result<Vec<Event>> {
+        let mut seen = HashSet::new();
+        let mut headless = false;
+        let mut events = vec![];
+        for (_, record) in records(ctx, Path::new(s(row, "path")), 0, None) {
+            headless |= s(&record, "type") == "user" && s(&record, "entrypoint").starts_with("sdk");
+            let uid = s(&record, "uuid");
+            if uid.is_empty() || seen.insert(uid.to_owned()) {
+                events.extend(record_events(&record));
+            }
+        }
+        if headless {
+            for event in &mut events {
+                if let Some((_, excluded)) = &mut event.user_turn {
+                    *excluded = true;
+                }
+            }
+        }
+        Ok(events)
+    }
     fn where_info(&self, ctx: &Context) -> Result<Vec<Value>> {
         let homes = self.homes(ctx);
         let mut names: HashMap<String, HashSet<PathBuf>> = HashMap::new();
@@ -563,7 +583,16 @@ fn record_events(r: &Value) -> Vec<Event> {
             let c = &r["message"]["content"];
             if let Some(t) = c.as_str() {
                 let (role, text) = classify_claude_text(t, r);
-                out.push(Event::new(&role, text, ts));
+                let mut event = Event::new(&role, text, ts);
+                event.user_turn = Some((
+                    if role == "prompt" {
+                        event.text.clone()
+                    } else {
+                        t.to_owned()
+                    },
+                    role != "prompt",
+                ));
+                out.push(event);
             } else if let Some(a) = c.as_array() {
                 let mut texts = vec![];
                 for b in a {
@@ -594,7 +623,16 @@ fn record_events(r: &Value) -> Vec<Event> {
                 }
                 if !texts.is_empty() {
                     let (role, text) = classify_claude_text(&texts.join("\n"), r);
-                    out.push(Event::new(&role, text, ts));
+                    let mut event = Event::new(&role, text, ts);
+                    event.user_turn = Some((
+                        if role == "prompt" {
+                            event.text.clone()
+                        } else {
+                            texts.join("\n")
+                        },
+                        role != "prompt",
+                    ));
+                    out.push(event);
                 }
             }
         }

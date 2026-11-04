@@ -266,6 +266,26 @@ impl StoreAdapter for Codex {
             jsonl::records(ctx, path, 0, needles).filter_map(|(_, rec)| codex_event(&rec)),
         ))
     }
+    fn prompt_events(&self, ctx: &Context, row: &Session) -> Result<Vec<Event>> {
+        let mut headless = false;
+        let mut events = vec![];
+        for (_, record) in jsonl::records(ctx, Path::new(s(row, "path")), 0, None) {
+            if s(&record, "type") == "session_meta" {
+                headless |= s(&record["payload"], "source") == "exec";
+            }
+            if let Some(event) = codex_event(&record) {
+                events.push(event);
+            }
+        }
+        if headless {
+            for event in &mut events {
+                if let Some((_, excluded)) = &mut event.user_turn {
+                    *excluded = true;
+                }
+            }
+        }
+        Ok(events)
+    }
     fn children(&self, ctx: &Context, row: &Session) -> Result<Vec<Session>> {
         let home = ctx.expand(s(row, "home"));
         let all = self.rows(ctx, &home, "", &[])?;
@@ -366,22 +386,30 @@ fn codex_event(rec: &Value) -> Option<Event> {
                     return None;
                 }
                 match s(p, "role") {
-                    "user" => Some(Event::new(
-                        if [
+                    "user" => {
+                        let (role, cleaned) =
+                            crate::adapters::claude::classify_claude_text(&text, p);
+                        let machine = role != "prompt"
+                            || [
+                                "# AGENTS.md instructions",
+                                "# Context from my IDE setup",
+                                "<codex_delegation>",
+                                "<environment_context>",
+                            ]
+                            .iter()
+                            .any(|prefix| text.trim_start().starts_with(prefix));
+                        let notice = [
                             "<",
                             "# AGENTS.md instructions",
                             "# Context from my IDE setup",
                         ]
                         .iter()
-                        .any(|prefix| text.trim_start().starts_with(prefix))
-                        {
-                            "notice"
-                        } else {
-                            "prompt"
-                        },
-                        text,
-                        ts,
-                    )),
+                        .any(|prefix| text.trim_start().starts_with(prefix));
+                        let mut event =
+                            Event::new(if notice { "notice" } else { "prompt" }, &text, ts);
+                        event.user_turn = Some((if machine { text } else { cleaned }, machine));
+                        Some(event)
+                    }
                     "assistant" => {
                         let mut e = Event::new("assistant", text, ts);
                         e.phase = opt_s(p, "phase");

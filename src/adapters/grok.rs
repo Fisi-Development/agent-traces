@@ -113,7 +113,9 @@ fn event_records(r: &Value) -> Vec<Event> {
             if !r["prompt_index"].is_null() {
                 let t = grok_user_text(&r["content"]);
                 if !t.is_empty() {
-                    out.push(Event::new("prompt", t, ts));
+                    let mut event = Event::new("prompt", &t, ts);
+                    event.user_turn = Some((t, false));
+                    out.push(event);
                 }
             }
         }
@@ -194,6 +196,26 @@ impl StoreAdapter for Grok {
             records(ctx, Path::new(s(row, "path")), 0, needles)
                 .flat_map(|(_, r)| event_records(&r)),
         ))
+    }
+    fn prompt_events(&self, ctx: &Context, row: &Session) -> Result<Vec<Event>> {
+        Ok(records(ctx, Path::new(s(row, "path")), 0, None)
+            .flat_map(|(_, r)| {
+                if s(&r, "type") == "user"
+                    && (r["prompt_index"].is_null() || grok_user_text(&r["content"]).is_empty())
+                {
+                    let ts = parse_ts(if truthy(&r["timestamp"]) {
+                        &r["timestamp"]
+                    } else {
+                        &r["created_at"]
+                    });
+                    let mut event = Event::new("notice", body(&r["content"]), ts);
+                    event.user_turn = Some((event.text.clone(), true));
+                    vec![event]
+                } else {
+                    event_records(&r)
+                }
+            })
+            .collect())
     }
     fn children(&self, _ctx: &Context, _row: &Session) -> Result<Vec<Session>> {
         Ok(vec![])

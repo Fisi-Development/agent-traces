@@ -7,6 +7,8 @@ pub type Session = Value;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Event {
+    #[serde(skip)]
+    pub user_turn: Option<(String, bool)>,
     pub role: String,
     pub text: String,
     pub ts: Option<DateTime<Utc>>,

@@ -111,6 +111,15 @@ enum Command {
         #[arg(long, value_name = "FIELD", conflicts_with = "schema_version")]
         count_by: Option<String>,
     },
+    /// Export user-typed prompts as redacted JSON Lines
+    Prompts {
+        #[command(flatten)]
+        common: Common,
+        #[arg(long, default_value_t = 2000)]
+        max_chars: usize,
+        #[arg(long)]
+        include_machine: bool,
+    },
     Find {
         #[arg(required_unless_present="query",num_args=1.., conflicts_with="query")]
         terms: Vec<String>,
@@ -260,6 +269,7 @@ impl Command {
             Self::T3 { .. } => "t3",
             Self::Ls { .. } => "ls",
             Self::Find { .. } => "find",
+            Self::Prompts { .. } => "prompts",
             Self::Touched { .. } => "touched",
             Self::Commit { .. } => "commit",
             Self::Failures { .. } => "failures",
@@ -495,6 +505,18 @@ fn execute_with_writers(
             };
             Ok(CommandOutput {
                 stdout: redact(&text) + "\n",
+                ..Default::default()
+            })
+        }
+        Command::Prompts {
+            common,
+            max_chars,
+            include_machine,
+        } => {
+            let filters = common.filters(ctx, Some("7d"))?;
+            let rows = agent_traces::prompts::collect(ctx, &filters, *max_chars, *include_machine)?;
+            Ok(CommandOutput {
+                stdout: rows.into_iter().map(|r| r.to_string() + "\n").collect(),
                 ..Default::default()
             })
         }

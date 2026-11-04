@@ -62,6 +62,27 @@ static MSVC runtime. Linux release archives target musl.
 
 ## Commands
 
+From 0.2.26, `agent-traces prompts [--since S] [--until U] [--harness H] [--cwd DIR]`
+exports user turns in chronological order as JSON Lines. The default window is
+seven days, with the same session filters as `ls`; only turns inside the time
+window are emitted. `--max-chars N` clips redacted text to N Unicode characters
+(default 2000), appending `…` when clipped. `chars` is the original, unclipped
+character count. Each row includes `address`, `harness`, `host`, UTC `time`,
+`cwd`, nullable `t3_thread`, and a zero-based `turn` index before filtering.
+
+T3-linked sessions use T3 messages: `origin: "t3"` requires `createdBy: "user"`
+and `creationSource` of `web`, `desktop`, or `mobile`. Other sessions use
+`origin: "heuristic"`, excluding subagents, injected notices, skill expansions,
+and machine prefixes. Non-T3 Claude sessions with an `sdk*` user entrypoint and
+Codex sessions with `session_meta.payload.source: "exec"` classify every user
+turn as machine; interactive or unmarked sessions keep the heuristic rules.
+`--include-machine` includes excluded user turns with
+`origin: "machine"`; tool results are never user turns. Missing provenance is
+not proof of a human author. Turns without a timestamp are skipped with a
+diagnostic. T3 messages are emitted once per thread, without duplicating their
+provider transcript. Legacy T3 messages without provenance appear only in the
+machine audit.
+
 From 0.2.12, `agent-traces commit REV --repo DIR --json` reports read-only local
 session evidence for a commit, with paired tool results, repository comparison,
 and scan coverage. See [Commit evidence](docs/commit-evidence.md) for the JSON
@@ -124,6 +145,7 @@ on missing required schema. Omit `--json` for pretty JSON.
 | `touched PATH` | Locate recorded file edits |
 | `commit REV` | Report local session evidence for a git commit |
 | `failures` | Rank errors and user corrections |
+| `prompts` | Export user-typed turns as redacted JSON Lines |
 | `show ID` | Render a transcript or selected turns |
 | `resolve ID` | Resolve full IDs and prefixes |
 | `tree ID` | List recorded child sessions |

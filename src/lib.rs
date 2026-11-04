@@ -11,3 +11,5 @@ pub mod util;
 pub mod commands;
 pub mod platform;
 pub mod render;
+
+pub mod prompts;

@@ -21,6 +21,9 @@ pub trait StoreAdapter {
         row: &'a Session,
         needles: Option<&[String]>,
     ) -> Result<Box<dyn Iterator<Item = Event> + 'a>>;
+    fn prompt_events(&self, ctx: &Context, row: &Session) -> Result<Vec<Event>> {
+        Ok(self.events(ctx, row, None)?.collect())
+    }
     fn children(&self, ctx: &Context, row: &Session) -> Result<Vec<Session>> {
         let id = crate::util::s(row, "id");
         Ok(self
