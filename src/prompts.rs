@@ -23,6 +23,15 @@ fn machine_prefix(text: &str) -> bool {
     .any(|prefix| text.trim_start().starts_with(prefix))
 }
 
+// agent-guard runs its LLM classifier from this directory. On Windows it goes through the Codex
+// app server, so the session carries no exec or SDK marker and only the cwd identifies it.
+fn guard_classifier_cwd(cwd: &str) -> bool {
+    cwd.replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+        .ends_with("/.agent-guard/llm-cwd")
+}
+
 pub fn collect(
     ctx: &Context,
     filters: &Filters,
@@ -132,6 +141,7 @@ pub fn collect(
         let launched = s(&row, "kind") == "worker"
             || matches!(s(&row, "entrypoint"), "agent" | "delegate" | "telepathica")
             || matches!(s(&row, "originator"), "agent" | "delegate" | "telepathica");
+        let classifier = guard_classifier_cwd(s(&row, "cwd"));
         let mut turn = 0;
         for event in events {
             let Some((text, excluded)) = event.user_turn else {
@@ -144,6 +154,7 @@ pub fn collect(
             let machine = excluded
                 || (thread_id.is_none()
                     && (subagent
+                        || classifier
                         || (index == 0 && launched)
                         || machine_prefix(&text)
                         || classified != "prompt"));
@@ -184,4 +195,18 @@ pub fn collect(
             .then_with(|| a["turn"].as_u64().cmp(&b["turn"].as_u64()))
     });
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guard_classifier_cwd;
+
+    #[test]
+    fn guard_classifier_cwd_matches_windows_and_unix_forms() {
+        assert!(guard_classifier_cwd(r"\\?\C:\Users\u\.agent-guard\llm-cwd"));
+        assert!(guard_classifier_cwd("/home/u/.agent-guard/llm-cwd/"));
+        assert!(!guard_classifier_cwd("/home/u/git/agent-guard/llm-cwd"));
+        assert!(!guard_classifier_cwd("/home/u/.agent-guard/llm-cwd/sub"));
+        assert!(!guard_classifier_cwd(""));
+    }
 }

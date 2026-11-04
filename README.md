@@ -75,7 +75,9 @@ and `creationSource` of `web`, `desktop`, or `mobile`. Other sessions use
 `origin: "heuristic"`, excluding subagents, injected notices, skill expansions,
 and machine prefixes. Non-T3 Claude sessions with an `sdk*` user entrypoint and
 Codex sessions with `session_meta.payload.source: "exec"` classify every user
-turn as machine; interactive or unmarked sessions keep the heuristic rules.
+turn as machine, as do sessions whose cwd is agent-guard's classifier
+directory (`.agent-guard/llm-cwd`), which carry no exec marker on Windows;
+interactive or unmarked sessions keep the heuristic rules.
 `--include-machine` includes excluded user turns with
 `origin: "machine"`; tool results are never user turns. Missing provenance is
 not proof of a human author. Turns without a timestamp are skipped with a
