@@ -840,24 +840,29 @@ where
     T: Borrow<(Session, Vec<Event>)>,
 {
     static CORRECTION: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)^\s*(?:no\b|nope\b|stop\b|wait\b|hold on|that'?s (?:not|wrong)|you (?:didn'?t|did not|missed|forgot|never)|wrong\b|why did you|don'?t\b|undo\b|revert\b|this is (?:wrong|broken)|it (?:still )?(?:doesn'?t|does not) work)").unwrap()
+        Regex::new(r"(?i)^\s*(?:no\b|nope\b|stop\b|wait\b|hold on|that['’]?s (?:not|wrong)|you (?:didn['’]?t|did not|missed|forgot|never)|wrong\b|why did you|don['’]?t\b|undo\b|revert\b|this is (?:wrong|broken)|it (?:still )?(?:doesn['’]?t|does not) work)").unwrap()
     });
     static INLINE_CORRECTION: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(concat!(
             r"(?i)\b(?:",
-            r"shouldn'?t (?:it|this|that|we|you|there|they) (?:be|have)|",
+            r"shouldn['’]?t (?:it|this|that|we|you|there|they) (?:be|have)|",
             r"(?:it|you|that) did do that|",
             r"because I asked (?:for|you)|",
             r"I (?:asked|told) you|",
-            r"didn'?t I (?:say|ask|tell)|",
-            r"(?:that'?s|this is|it'?s) not what I|",
+            r"didn['’]?t I (?:say|ask|tell)|",
+            r"(?:that['’]?s|this is|it['’]?s) not what I|",
             r"not what I (?:asked|meant|wanted|said)|",
             r"(?:seem|seems) to be (?:conflating|confusing|mixing)|",
-            r"you(?:'re| are) (?:conflating|confusing|mixing up|ignoring)|",
-            r"(?:you were|weren'?t you) supposed to|",
-            r"you shouldn'?t have|",
-            r"(?:why|how come) (?:are|did|didn'?t|is|isn'?t|aren'?t|do|does|would) you\b",
-            r")\b",
+            r"you(?:['’]re| are) (?:conflating|confusing|mixing up|ignoring)|",
+            r"(?:you were|weren['’]?t you) supposed to|",
+            r"you shouldn['’]?t have|",
+            r"why (?:don['’]?t|aren['’]?t|isn['’]?t|haven['’]?t|wasn['’]?t|won['’]?t|can['’]?t) you (?:have|just)|",
+            r"I didn['’]?t (?:really )?want (?:a|an|the|this|that|it|you)|",
+            r"did you (?:actually |even |really )?pass (?:this|it|that) (?:back|up|on)|",
+            r"is there actually (?:a |an )?(?:goal|watch|PR|lease)|",
+            r"what\? just use|",
+            r"(?:why|how come) (?:are|did|didn['’]?t|is|isn['’]?t|aren['’]?t|do|does|would) you\b",
+            r")\b|(?:^|\s):\(+(?:[\s.!?]|$)",
         ))
         .unwrap()
     });
@@ -1329,6 +1334,49 @@ mod tests {
             let out = failures(&ctx, &rows, 0, 10, true, None, EventWindow::default());
             let value: Value = serde_json::from_str(out.stdout.trim()).unwrap();
             assert_eq!(value["corrections"], expected);
+        }
+    }
+    #[test]
+    fn failures_counts_l3_study_corrections() {
+        // Corrections Royal typed in the 2 Nov trace study (L3) that the
+        // scorer missed, plus neutral prompts that must stay unscored.
+        let ctx = Context::from_env();
+        for (text, expected) in [
+            ("why don't you have access to harbor hub?!", 1),
+            ("why dont you just use the hub", 1),
+            ("I didnt want a PR", 1),
+            ("why don’t you have access", 1),
+            ("I didn’t want a PR", 1),
+            ("you’re ignoring the brief", 1),
+            ("they keep failing :((((", 1),
+            ("still broken :(.", 1),
+            ("Did you pass the tests?", 0),
+            ("did you pass the --locked flag?", 0),
+            ("Is there actually a way to stream this?", 0),
+            ("why don't you go ahead and run the tests", 0),
+            ("I didn't want to interrupt, but also add X", 0),
+            (".... why are... what? Just use the mcp", 1),
+            ("So I didn't really want a PR to 3 to be made", 1),
+            ("did you pass this back up the chain?", 1),
+            ("Is there actually a goal active?", 1),
+            ("still broken :(", 1),
+            (":(", 1),
+            ("Why don't we add a cache here?", 0),
+            ("Is there a goal for the overnight run?", 0),
+            ("Did you see the new release notes?", 0),
+            ("what do you think about the design?", 0),
+            ("map(:(x) => x)", 0),
+        ] {
+            let rows = [(
+                row(),
+                vec![
+                    Event::new("prompt", "start", None),
+                    Event::new("prompt", text, None),
+                ],
+            )];
+            let out = failures(&ctx, &rows, 0, 10, true, None, EventWindow::default());
+            let value: Value = serde_json::from_str(out.stdout.trim()).unwrap();
+            assert_eq!(value["corrections"], expected, "{text}");
         }
     }
     #[test]
