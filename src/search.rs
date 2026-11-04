@@ -78,38 +78,73 @@ pub fn snippet(text: &str, terms: &[String], width: usize) -> String {
         )
     )
 }
+#[cfg(test)]
+thread_local! {
+    static PREFILTER_READS: std::cell::RefCell<HashMap<std::path::PathBuf, usize>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+#[cfg(test)]
 fn file_matches(ctx: &Context, harness: &str, path: &Path, patterns: &[Regex]) -> bool {
-    match file_matches_inner(path, patterns) {
+    file_matches_multi(ctx, harness, path, &[patterns.to_vec()])[0]
+}
+fn file_matches_multi(
+    ctx: &Context,
+    harness: &str,
+    path: &Path,
+    queries: &[Vec<Regex>],
+) -> Vec<bool> {
+    match file_matches_multi_inner(path, queries) {
         Ok(found) => found,
-        Err(error) => {
+        Err((found, error)) => {
             ctx.diagnostic(
                 "store_unreadable",
                 Some(harness),
                 Some(path),
                 error.to_string(),
             );
-            false
+            found
         }
     }
 }
+#[cfg(test)]
 fn file_matches_inner(path: &Path, patterns: &[Regex]) -> std::io::Result<bool> {
-    let mut reader = crate::storage::jsonl::open(path)?;
-    let mut seen = vec![false; patterns.len()];
-    let mut remaining = patterns.len();
+    Ok(file_matches_multi_inner(path, &[patterns.to_vec()]).map_err(|(_, error)| error)?[0])
+}
+fn file_matches_multi_inner(
+    path: &Path,
+    queries: &[Vec<Regex>],
+) -> std::result::Result<Vec<bool>, (Vec<bool>, std::io::Error)> {
+    #[cfg(test)]
+    PREFILTER_READS.with(|reads| *reads.borrow_mut().entry(path.to_path_buf()).or_default() += 1);
+    let mut reader =
+        crate::storage::jsonl::open(path).map_err(|error| (vec![false; queries.len()], error))?;
+    let mut seen: Vec<_> = queries
+        .iter()
+        .map(|patterns| vec![false; patterns.len()])
+        .collect();
+    let mut remaining: Vec<_> = queries.iter().map(Vec::len).collect();
     let mut line = Vec::new();
     loop {
         line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            return Ok(false);
+        // A query already satisfied before a later read error would have stopped
+        // here in a single-query scan, so preserve its successful result.
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(|error| (remaining.iter().map(|n| *n == 0).collect(), error))?
+            == 0
+        {
+            return Ok(remaining.iter().map(|n| *n == 0).collect());
         }
-        for (i, p) in patterns.iter().enumerate() {
-            if !seen[i] && p.is_match(&line) {
-                seen[i] = true;
-                remaining -= 1;
+        for ((patterns, seen), remaining) in queries.iter().zip(&mut seen).zip(&mut remaining) {
+            for (pattern, seen) in patterns.iter().zip(seen) {
+                if !*seen && pattern.is_match(&line) {
+                    *seen = true;
+                    *remaining -= 1;
+                }
             }
         }
-        if remaining == 0 {
-            return Ok(true);
+        if remaining.iter().all(|n| *n == 0) {
+            return Ok(vec![true; queries.len()]);
         }
     }
 }
@@ -230,15 +265,39 @@ pub fn prefilter_candidates(
     terms: &[String],
     scope: &[&str],
 ) -> Result<Vec<Session>> {
-    if terms.is_empty() {
-        return Ok(rows);
-    }
-    let patterns = terms
+    Ok(prefilter_candidates_multi(ctx, rows, &[terms.to_vec()], scope)?.remove(0))
+}
+/// Select each query's candidates in one shared pass through transcript sources.
+pub fn prefilter_candidates_multi(
+    ctx: &Context,
+    rows: Vec<Session>,
+    queries: &[Vec<String>],
+    scope: &[&str],
+) -> Result<Vec<Vec<Session>>> {
+    let mut candidates: Vec<_> = queries
         .iter()
-        .map(|t| {
-            RegexBuilder::new(&regex::escape(t))
-                .case_insensitive(true)
-                .build()
+        .map(|terms| {
+            if terms.is_empty() {
+                rows.clone()
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+    if queries.iter().all(Vec::is_empty) {
+        return Ok(candidates);
+    }
+    let patterns = queries
+        .iter()
+        .map(|terms| {
+            terms
+                .iter()
+                .map(|t| {
+                    RegexBuilder::new(&regex::escape(t))
+                        .case_insensitive(true)
+                        .build()
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
     // Keep harness encounter order and stable ordering within every harness.
@@ -251,23 +310,30 @@ pub fn prefilter_candidates(
             groups.push((h, vec![row]));
         }
     }
-    let mut candidates = Vec::new();
+    let mut memo = HashMap::new();
     for (h, rs) in groups {
         if matches!(h.as_str(), "claude" | "codex" | "grok") {
-            let mut memo = HashMap::new();
             for row in rs {
                 let p = s(&row, "path");
-                let keep = *memo
+                let keep = memo
                     .entry(p.to_owned())
-                    .or_insert_with(|| file_matches(ctx, &h, &ctx.expand(p), &patterns));
-                if keep {
-                    candidates.push(row);
+                    .or_insert_with(|| file_matches_multi(ctx, &h, &ctx.expand(p), &patterns));
+                for (i, terms) in queries.iter().enumerate() {
+                    if !terms.is_empty() && keep[i] {
+                        candidates[i].push(row.clone());
+                    }
                 }
             }
         } else if matches!(h.as_str(), "t3" | "opencode") {
-            match sql_candidates(ctx, &h, terms, scope) {
-                Ok(ids) => candidates.extend(rs.into_iter().filter(|r| ids.contains(s(r, "id")))),
-                Err(e) => ctx.diagnostic("store_unreadable", Some(&h), None, e.to_string()),
+            for (i, terms) in queries.iter().enumerate() {
+                if terms.is_empty() {
+                    continue;
+                }
+                match sql_candidates(ctx, &h, terms, scope) {
+                    Ok(ids) => candidates[i]
+                        .extend(rs.iter().filter(|r| ids.contains(s(r, "id"))).cloned()),
+                    Err(e) => ctx.diagnostic("store_unreadable", Some(&h), None, e.to_string()),
+                }
             }
         }
     }
@@ -294,6 +360,24 @@ pub fn search(ctx: &Context, rows: Vec<Session>, options: &SearchOptions) -> Res
         })
         .collect();
     let candidates = prefilter_candidates(ctx, rows, &terms, scope)?;
+    search_candidates(ctx, candidates, options)
+}
+/// Score candidates already selected for this query, preserving its BM25 corpus.
+pub fn search_candidates(
+    ctx: &Context,
+    candidates: Vec<Session>,
+    options: &SearchOptions,
+) -> Result<SearchResult> {
+    let terms: Vec<String> = options
+        .terms
+        .iter()
+        .filter(|t| !t.is_empty())
+        .cloned()
+        .collect();
+    if terms.is_empty() {
+        bail!("give at least one search term");
+    }
+    let scope = roles(&options.scope)?;
     let lows: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
     let mut df = vec![0usize; lows.len()];
     let mut n_docs = 0usize;
@@ -443,6 +527,74 @@ fn sort_matches(matches: &mut [SearchMatch], sort: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multi_prefilter_matches_single_queries_and_reads_each_file_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = Context::from_env();
+        ctx.home = temp.path().to_path_buf();
+        let store = temp.path().join(".claude/projects/test");
+        std::fs::create_dir_all(&store).unwrap();
+        let mut rows = Vec::new();
+        for (id, text) in [
+            ("one", "Alpha\nbeta\n"),
+            ("two", "beta gamma\n"),
+            ("three", "unrelated\n"),
+        ] {
+            let path = store.join(format!("{id}.jsonl"));
+            std::fs::write(&path, text).unwrap();
+            rows.push(serde_json::json!({"harness":"claude", "id":id, "path":path}));
+        }
+        // Duplicate rows must share the same source read without changing order.
+        rows.push(rows[0].clone());
+        let queries = vec![
+            vec!["alpha".into(), "beta".into()],
+            vec!["beta".into()],
+            vec!["absent".into()],
+        ];
+        let scope = roles("all").unwrap();
+        let expected: Vec<_> = queries
+            .iter()
+            .map(|q| prefilter_candidates(&ctx, rows.clone(), q, scope).unwrap())
+            .collect();
+        PREFILTER_READS.with(|reads| reads.borrow_mut().clear());
+        let actual = prefilter_candidates_multi(&ctx, rows, &queries, scope).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            actual
+                .iter()
+                .map(|rows| rows.iter().map(|row| s(row, "id")).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec!["one", "one"], vec!["one", "two", "one"], vec![]]
+        );
+        PREFILTER_READS.with(|reads| {
+            let reads = reads.borrow();
+            assert_eq!(reads.len(), 3);
+            assert!(reads.values().all(|count| *count == 1));
+        });
+    }
+    #[test]
+    fn multi_prefilter_preserves_hits_before_a_later_read_error() {
+        use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+        let ctx = Context::from_env();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("partial.jsonl.zst");
+        let text = format!("needle\n{}", "other\n".repeat(50000));
+        let mut bytes = compress_to_vec(text.as_bytes(), CompressionLevel::Fastest);
+        bytes.extend_from_slice(b"invalid next frame");
+        std::fs::write(&path, bytes).unwrap();
+        let rows = vec![serde_json::json!({"harness":"codex", "id":"one", "path":path})];
+        let queries = vec![vec!["needle".into()], vec!["absent".into()]];
+        let scope = roles("all").unwrap();
+        let expected: Vec<_> = queries
+            .iter()
+            .map(|q| prefilter_candidates(&ctx, rows.clone(), q, scope).unwrap())
+            .collect();
+        ctx.diagnostics.borrow_mut().clear();
+        let actual = prefilter_candidates_multi(&ctx, rows.clone(), &queries, scope).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual, vec![rows, vec![]]);
+        assert_eq!(ctx.diagnostics.borrow().len(), 1);
+    }
     #[test]
     fn shared_prefilter_groups_stably_and_memoizes_source_errors() {
         let ctx = Context::from_env();

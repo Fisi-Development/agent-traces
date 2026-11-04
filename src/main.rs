@@ -606,9 +606,34 @@ fn execute_with_writers(
                 }
             }
             if !query.is_empty() {
-                let rows = core::gather(ctx, &common.filters(ctx, None)?)?;
+                let rows: Vec<_> = core::gather(ctx, &common.filters(ctx, None)?)?
+                    .into_iter()
+                    .filter(|row| {
+                        *include_self
+                            || !["id", "parent", "provider_id"]
+                                .iter()
+                                .any(|key| ctx.self_ids.contains(s(row, key)))
+                    })
+                    .collect();
+                // Refuse a bad --scope before announcing the scan.
+                let roles = search::roles(scope)?;
+                let _ = stderr.write_all(
+                    output_text(
+                        &format!(
+                            "Searching {} sessions for {} queries\n",
+                            rows.len(),
+                            query.len()
+                        ),
+                        cfg!(windows),
+                        common.format.v1(),
+                    )
+                    .as_bytes(),
+                );
+                let _ = stderr.flush();
+                let queries: Vec<_> = query.iter().map(|q| vec![q.clone()]).collect();
+                let candidates = search::prefilter_candidates_multi(ctx, rows, &queries, roles)?;
                 let mut found = false;
-                for q in query {
+                for (q, candidates) in query.iter().zip(candidates) {
                     let command = Command::Find {
                         terms: vec![q.clone()],
                         query: vec![],
@@ -623,9 +648,9 @@ fn execute_with_writers(
                         fields: vec![],
                         include_self: *include_self,
                     };
-                    let result = search::search(
+                    let result = search::search_candidates(
                         ctx,
-                        rows.clone(),
+                        candidates,
                         &SearchOptions {
                             terms: vec![q.clone()],
                             scope: scope.clone(),
@@ -1379,9 +1404,10 @@ mod tests {
         for json_output in [false, true] {
             for queries in [["pelican", "absent-needle"], ["absent-one", "absent-two"]] {
                 let mut expected_out = String::new();
-                let mut expected_err = String::new();
+                let mut expected_err =
+                    output_text("Searching 1 sessions for 2 queries\n", cfg!(windows), false);
                 let mut out_boundaries = Vec::new();
-                let mut err_boundaries = Vec::new();
+                let mut err_boundaries = vec![expected_err.len()];
                 let mut found = false;
                 // Reconstruct the original buffered bytes from single-query output.
                 for query in queries {
