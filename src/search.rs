@@ -85,16 +85,20 @@ thread_local! {
 }
 #[cfg(test)]
 fn file_matches(ctx: &Context, harness: &str, path: &Path, patterns: &[Regex]) -> bool {
-    file_matches_multi(ctx, harness, path, &[patterns.to_vec()])[0]
+    file_matches_multi(ctx, harness, path, &[patterns.to_vec()]).is_some_and(|found| found[0])
 }
+/// None when the transcript no longer exists: an index row (Codex state_5.sqlite)
+/// can outlive its deleted rollout, and that is a missing session, not an
+/// unreadable store.
 fn file_matches_multi(
     ctx: &Context,
     harness: &str,
     path: &Path,
     queries: &[Vec<Regex>],
-) -> Vec<bool> {
-    match file_matches_multi_inner(path, queries) {
+) -> Option<Vec<bool>> {
+    Some(match file_matches_multi_inner(path, queries) {
         Ok(found) => found,
+        Err((_, error)) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err((found, error)) => {
             ctx.diagnostic(
                 "store_unreadable",
@@ -104,7 +108,7 @@ fn file_matches_multi(
             );
             found
         }
-    }
+    })
 }
 #[cfg(test)]
 fn file_matches_inner(path: &Path, patterns: &[Regex]) -> std::io::Result<bool> {
@@ -313,16 +317,34 @@ pub fn prefilter_candidates_multi(
     let mut memo = HashMap::new();
     for (h, rs) in groups {
         if matches!(h.as_str(), "claude" | "codex" | "grok") {
+            let mut missing = 0usize;
             for row in rs {
                 let p = s(&row, "path");
-                let keep = memo
-                    .entry(p.to_owned())
-                    .or_insert_with(|| file_matches_multi(ctx, &h, &ctx.expand(p), &patterns));
+                let keep = memo.entry(p.to_owned()).or_insert_with(|| {
+                    let found = file_matches_multi(ctx, &h, &ctx.expand(p), &patterns);
+                    missing += usize::from(found.is_none());
+                    found
+                });
+                let Some(keep) = keep else { continue };
                 for (i, terms) in queries.iter().enumerate() {
                     if !terms.is_empty() && keep[i] {
                         candidates[i].push(row.clone());
                     }
                 }
+            }
+            if missing > 0 {
+                // Deleted transcripts are not unreadable stores: count them once,
+                // as information, so coverage of the files that exist stays complete.
+                ctx.diagnostics.borrow_mut().push(crate::model::Diagnostic {
+                    code: "not_found".into(),
+                    severity: "info".into(),
+                    harness: Some(h.clone()),
+                    store_id: None,
+                    message: format!(
+                        "{missing} indexed session(s) skipped: transcript file no longer on disk"
+                    ),
+                    retryable: false,
+                });
             }
         } else if matches!(h.as_str(), "t3" | "opencode") {
             for (i, terms) in queries.iter().enumerate() {
@@ -653,8 +675,21 @@ mod tests {
     fn unreadable_source_reports_partial_coverage_but_no_match_does_not() {
         let ctx = Context::from_env();
         let temp = tempfile::tempdir().unwrap();
-        let absent = temp.path().join("missing.jsonl");
         let patterns = vec![Regex::new("needle").unwrap()];
+        // A deleted transcript is a missing session, not partial coverage.
+        assert!(!file_matches(
+            &ctx,
+            "claude",
+            &temp.path().join("gone.jsonl"),
+            &patterns
+        ));
+        assert!(ctx.diagnostics.borrow().is_empty());
+        let absent = temp.path().join("missing.jsonl");
+        std::fs::write(
+            temp.path().join("missing.jsonl.zst"),
+            b"\x28\xb5\x2f\xfd garbage",
+        )
+        .unwrap();
         assert!(!file_matches(&ctx, "claude", &absent, &patterns));
         assert_eq!(ctx.diagnostics.borrow().len(), 1);
         assert_eq!(ctx.diagnostics.borrow()[0].code, "store_unreadable");
