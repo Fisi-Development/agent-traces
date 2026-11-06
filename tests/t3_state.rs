@@ -109,13 +109,13 @@ fn state_batches_threads_and_selects_fields() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stdout).unwrap().replace("\r\n", "\n"),
         "thread:b\tcompleted\t2026-10-02T00:00:00Z\nthread:a\trunning\t2026-10-01T00:00:00Z\n"
     );
     let out = run_args(home.path(), &["b", "a", "--fields", fields, "--json"]);
     assert!(out.status.success());
     assert_eq!(
-        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stdout).unwrap().replace("\r\n", "\n"),
         concat!(
             "{\"thread_id\":\"thread:b\",\"latest_run.status\":\"completed\",\"updated_at\":\"2026-10-02T00:00:00Z\"}\n",
             "{\"thread_id\":\"thread:a\",\"latest_run.status\":\"running\",\"updated_at\":\"2026-10-01T00:00:00Z\"}\n"

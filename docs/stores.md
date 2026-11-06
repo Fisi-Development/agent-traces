@@ -66,3 +66,16 @@ Surveyed 2026-09-23 on the author's machines; the counts and dates below come fr
 - **Claude desktop.** `~/Library/Application Support/Claude/claude-code-sessions` and `local-agent-mode-sessions` hold metadata with a `cliSessionId` pointer into a Claude home; no message bodies.
 - **context-mode.** `<home>/context-mode/sessions/*.db` per harness home: `session_meta`, `session_events` (`user_prompt` in full, `turn_end.last_assistant_message` truncated, decisions, findings). Session ids equal the harness ids; shard filenames are not unique across homes. The Codex sidecar stopped writing on 2026-09-03.
 - **Empty or irrelevant.** Codex desktop app support dir (Chromium profile), Conductor (`session_messages` empty), CodexBar (quota only), Zed `threads.db` (empty), Warp (no local store).
+
+## Session usage
+
+`usage ID...` reads full Claude and Codex transcripts without changing `ls` rows.
+Claude assistant messages are deduplicated by `message.id` with the last record
+winning, and synthetic messages are skipped. Usage includes input, cache reads,
+cache creation and output tokens. Codex `event_msg` / `token_count` records supply
+the last non-null `info.total_token_usage`; increases in its cumulative total
+count API calls. Cached input is separated from input, and reasoning remains
+part of output. A transcript with no usage records produces zero counts; a
+missing transcript, an unsupported harness and a T3 thread without a provider
+transcript report null counts with a note. Wall
+time is the whole-second difference between the session row's start and update.

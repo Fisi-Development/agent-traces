@@ -152,6 +152,7 @@ on missing required schema. Omit `--json` for pretty JSON.
 | `failures` | Rank errors and user corrections |
 | `prompts` | Export user-typed turns as redacted JSON Lines |
 | `show ID` | Render a transcript or selected turns |
+| `usage ID... [--json]` | Per-session token usage, API calls and wall time for Claude and Codex, including T3 provider transcripts |
 | `resolve ID` | Resolve full IDs and prefixes |
 | `tree ID` | List recorded child sessions |
 | `handoff ID` | Extract a handoff draft |
@@ -197,7 +198,7 @@ address per matching session, best first, in the same form as `ls --fields
 address`, which `show` and `resolve` take back; `--count` prints only the number of matching sessions,
 including those past `--limit`. The summary line goes to stderr.
 
-Legacy `ls --json`, `find --json`, and `resolve --json` emit JSON Lines. A
+Legacy `ls --json`, `find --json`, `resolve --json`, and `usage --json` emit JSON Lines. A
 `find --json` line is the session row plus `_score` and `hits` (each `ts`,
 `role`, `snippet`): five hits, or as many as an explicit `--hits` asks for.
 Mailbox consumers should use `--json --schema-version 1` and set

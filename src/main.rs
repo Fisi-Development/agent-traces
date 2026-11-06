@@ -214,6 +214,13 @@ enum Command {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
+    /// Token usage, API calls and wall time for sessions
+    Usage {
+        #[arg(required = true)]
+        ids: Vec<String>,
+        #[command(flatten)]
+        format: Format,
+    },
     Resolve {
         id: String,
         #[command(flatten)]
@@ -277,6 +284,7 @@ impl Command {
             Self::Commit { .. } => "commit",
             Self::Failures { .. } => "failures",
             Self::Show { .. } => "show",
+            Self::Usage { .. } => "usage",
             Self::Resolve { .. } => "resolve",
             Self::Tree { .. } => "tree",
             Self::Handoff { .. } => "handoff",
@@ -291,7 +299,8 @@ impl Command {
             | Self::Touched { common, .. }
             | Self::Commit { common, .. }
             | Self::Failures { common, .. } => Some(&common.format),
-            Self::Resolve { format, .. }
+            Self::Usage { format, .. }
+            | Self::Resolve { format, .. }
             | Self::Handoff { format, .. }
             | Self::Live { format }
             | Self::Me { format } => Some(format),
@@ -905,6 +914,21 @@ fn execute_with_writers(
                 ..Default::default()
             })
         }
+        Command::Usage { ids, format } => {
+            let rows = ids
+                .iter()
+                .map(|id| agent_traces::usage::session(ctx, id))
+                .collect::<Result<Vec<_>>>()?;
+            let stdout = if format.json {
+                rows.iter().map(|row| format!("{row}\n")).collect()
+            } else {
+                agent_traces::usage::text(&rows)
+            };
+            Ok(CommandOutput {
+                stdout: redact(&stdout),
+                ..Default::default()
+            })
+        }
         Command::Resolve { id, format } => {
             let rows = core::merge_t3(core::resolve_any(ctx, id)?);
             if format.v1() {
@@ -1357,7 +1381,10 @@ fn main() {
                     exit_code: if code == 4 { 2 } else { code },
                     ..Default::default()
                 };
-                if let Some(SelectionError::Ambiguous(rows)) = e.downcast_ref::<SelectionError>() {
+                if cmd.name() != "usage"
+                    && let Some(SelectionError::Ambiguous(rows)) =
+                        e.downcast_ref::<SelectionError>()
+                {
                     out.stdout = rows_text(&ctx, rows, false);
                 }
                 out
