@@ -130,15 +130,34 @@ impl T3 {
         Ok(json!({"thread_id":thread,"text":text}))
     }
     /// Inspect orchestration metadata without exporting message or file payloads.
-    pub fn state(ctx: &Context, thread: &str) -> Result<Value> {
+    pub fn state(ctx: &Context, threads: &[String]) -> Result<Vec<Value>> {
         let con = Self::open_v2(ctx)?.ok_or_else(|| anyhow::anyhow!("T3 v2 store not found"))?;
+        // All thread, run and checkpoint reads share one SQLite snapshot.
+        con.execute_batch("BEGIN")?;
+        let has_updated_at = db::query(
+            &con,
+            "PRAGMA table_info(orchestration_v2_projection_threads)",
+            &[],
+        )?
+        .iter()
+        .any(|column| column["name"] == "updated_at");
+        threads
+            .iter()
+            .map(|thread| Self::state_in_snapshot(&con, thread, has_updated_at))
+            .collect()
+    }
+
+    fn state_in_snapshot(
+        con: &rusqlite::Connection,
+        thread: &str,
+        has_updated_at: bool,
+    ) -> Result<Value> {
         let (harness, id) = crate::core::split_address(thread)?;
         anyhow::ensure!(harness.is_none_or(|h| h == "t3"), "expected a T3 thread id");
-        // Keep all three reads on the same SQLite snapshot.
-        con.execute_batch("BEGIN")?;
-        let rows = db::query(&con,
-            "select thread_id,title,payload_json from orchestration_v2_projection_threads
-             where deleted_at is null and (thread_id=?1 or substr(thread_id,instr(thread_id,':')+1)=?1)",
+        let columns = if has_updated_at { ",updated_at" } else { "" };
+        let rows = db::query(con,
+            &format!("select thread_id,title,payload_json{columns} from orchestration_v2_projection_threads
+             where deleted_at is null and (thread_id=?1 or substr(thread_id,instr(thread_id,':')+1)=?1)"),
             &[json!(id)])?;
         anyhow::ensure!(!rows.is_empty(), "no T3 thread matches {thread:?}");
         anyhow::ensure!(
@@ -147,11 +166,11 @@ impl T3 {
         );
         let row = &rows[0];
         let payload: Value = serde_json::from_str(s(row, "payload_json"))?;
-        let run = db::query(&con,
+        let run = db::query(con,
             "select run_id,status from orchestration_v2_projection_runs where thread_id=? order by ordinal desc,run_id desc limit 1",
             &[row["thread_id"].clone()])?.pop().unwrap_or(Value::Null);
-        let checkpoint = if db::table_exists(&con, "orchestration_v2_projection_checkpoints")? {
-            db::query(&con,
+        let checkpoint = if db::table_exists(con, "orchestration_v2_projection_checkpoints")? {
+            db::query(con,
                 "select checkpoint_id,status,captured_at,payload_json from orchestration_v2_projection_checkpoints
                  where thread_id=? order by captured_at desc,checkpoint_id desc limit 1",
                 &[row["thread_id"].clone()])?.pop()
@@ -164,9 +183,14 @@ impl T3 {
         } else {
             Value::Null
         };
-        Ok(json!({"thread_id":row["thread_id"],"title":row["title"],
-            "branch":payload["branch"],"worktree_path":payload["worktreePath"],
-            "latest_run":run,"latest_checkpoint":checkpoint}))
+        let mut state = json!({"thread_id":row["thread_id"],"title":row["title"],
+            "branch":payload["branch"],"worktree_path":payload["worktreePath"]});
+        if has_updated_at {
+            state["updated_at"] = row["updated_at"].clone();
+        }
+        state["latest_run"] = run;
+        state["latest_checkpoint"] = checkpoint;
+        Ok(state)
     }
     pub(crate) fn running(&self, ctx: &Context) -> Result<Vec<Session>> {
         // A v1-only home keeps 0.1.0's query, so `live` output there is unchanged.

@@ -99,13 +99,16 @@ remain an AND search; they cannot be combined with `-q`. Grouped queries cannot
 be combined with `--ids`, `--count`, or `--schema-version`. Exit 1 means all
 queries missed; exit 0 means at least one matched.
 
-`agent-traces t3 state THREAD --json` reads metadata from the local T3 v2 store
-without transcript output: thread id, title, branch, worktree path, latest run
-id/status and latest checkpoint id/status/time/ref. Pass a full thread id, with
+`agent-traces t3 state THREAD [THREAD ...] --json` reads metadata from the local
+T3 v2 store without transcript output: thread id, title, branch, worktree path,
+updated_at (when available), latest run id/status and latest checkpoint id/status/time/ref. Pass a full thread id, with
 or without its `mcp:`, `thread:` or `import:` prefix, or a local `t3:ID@host`
-address. It emits one JSON object; without `--json`, it pretty-prints that
-object. Missing run/checkpoint metadata is null. A missing or ambiguous thread
-is an error; it never guesses between threads.
+address. It emits one JSON object for one id or an array in argument order for several;
+without `--json`, it pretty-prints the result. All ids share one SQLite snapshot,
+and any missing or ambiguous id fails without partial output. Select dotted
+fields with `--fields thread_id,latest_run.status,updated_at`: one tab-separated
+line per thread, or one compact JSON object per line with `--json`. Missing
+run/checkpoint metadata is null; it never guesses between threads.
 
 From 0.2.24, `t3 threads` lists local thread metadata, newest update first,
 excluding deleted threads unless `--include-deleted` is set. Filter by project,
@@ -143,7 +146,7 @@ on missing required schema. Omit `--json` for pretty JSON.
 | `t3 summary THREAD --json` | Read the latest user/assistant text for an exact full thread id, redacted and capped at 500 Unicode characters |
 | `t3 threads [filters]` | List thread metadata or group counts with `--count-by` |
 | `t3 events [filters]` | Read orchestration events or group counts with `--count-by` |
-| `t3 state THREAD` | Read T3 v2 branch, worktree, latest run and checkpoint metadata |
+| `t3 state THREAD [THREAD ...] [--fields a,b.c]` | Read T3 v2 branch, worktree, updated_at, latest run and checkpoint metadata |
 | `touched PATH` | Locate recorded file edits |
 | `commit REV` | Report local session evidence for a git commit |
 | `failures` | Rank errors and user corrections |

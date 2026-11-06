@@ -255,9 +255,12 @@ enum T3Command {
         #[arg(long)]
         json: bool,
     },
-    /// Read a thread's branch, worktree, latest run and latest checkpoint
+    /// Read threads' branch, worktree, updated_at, latest run and latest checkpoint
     State {
-        thread_id: String,
+        #[arg(required = true)]
+        thread_ids: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        fields: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -328,6 +331,22 @@ fn cell(v: &Value) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+/// Dotted metadata paths accepted by `t3 state --fields`.
+const T3_STATE_FIELDS: &[&str] = &[
+    "thread_id",
+    "title",
+    "branch",
+    "worktree_path",
+    "updated_at",
+    "latest_run",
+    "latest_run.run_id",
+    "latest_run.status",
+    "latest_checkpoint",
+    "latest_checkpoint.checkpoint_id",
+    "latest_checkpoint.status",
+    "latest_checkpoint.captured_at",
+    "latest_checkpoint.ref",
+];
 /// Per-hit fields `find --fields` takes beside the session fields.
 const HIT_FIELDS: &[&str] = &["hit.ts", "hit.role", "hit.text"];
 fn rows_fields(rows: &[Session], fields: &[String], json: bool) -> String {
@@ -496,7 +515,51 @@ fn execute_with_writers(
                 T3Command::Events(opts) => (t3_query::events(ctx, opts)?, opts.json),
                 T3Command::Snapshot { json } => (T3::snapshot(ctx)?, *json),
                 T3Command::Summary { thread_id, json } => (T3::summary(ctx, thread_id)?, *json),
-                T3Command::State { thread_id, json } => (T3::state(ctx, thread_id)?, *json),
+                T3Command::State {
+                    thread_ids,
+                    fields,
+                    json,
+                } => {
+                    for f in fields {
+                        if !T3_STATE_FIELDS.contains(&f.as_str()) {
+                            bail!(
+                                "unknown field {f:?}; fields: {}",
+                                T3_STATE_FIELDS.join(", ")
+                            );
+                        }
+                    }
+                    let states = T3::state(ctx, thread_ids)?;
+                    if !fields.is_empty() {
+                        let text = states
+                            .iter()
+                            .map(|state| {
+                                let values = fields
+                                    .iter()
+                                    .map(|f| {
+                                        f.split('.').fold(state, |value, key| &value[key]).clone()
+                                    })
+                                    .collect::<Vec<_>>();
+                                if *json {
+                                    Value::Object(fields.iter().cloned().zip(values).collect())
+                                        .to_string()
+                                } else {
+                                    values.iter().map(cell).collect::<Vec<_>>().join("\t")
+                                }
+                            })
+                            .map(|line| line + "\n")
+                            .collect::<String>();
+                        return Ok(CommandOutput {
+                            stdout: redact(&text),
+                            ..Default::default()
+                        });
+                    }
+                    let value = if states.len() == 1 {
+                        states.into_iter().next().unwrap()
+                    } else {
+                        json!(states)
+                    };
+                    (value, *json)
+                }
             };
             let text = if json {
                 value.to_string()

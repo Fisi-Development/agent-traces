@@ -73,3 +73,73 @@ fn state_reads_thread_latest_run_and_checkpoint_without_changing_the_store() {
     let state: Value = serde_json::from_slice(&absent.stdout).unwrap();
     assert!(state["latest_checkpoint"].is_null());
 }
+
+fn run_args(home: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_agent-traces"))
+        .args(["t3", "state"])
+        .args(args)
+        .env_clear()
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("AGENT_TRACES_CACHE", home.join("cache"))
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn state_batches_threads_and_selects_fields() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".t3/userdata");
+    fs::create_dir_all(&dir).unwrap();
+    let con = Connection::open(dir.join("statev2.sqlite")).unwrap();
+    con.execute_batch(r#"PRAGMA journal_mode=WAL;
+        CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY,title TEXT,deleted_at TEXT,payload_json TEXT,updated_at TEXT);
+        CREATE TABLE orchestration_v2_projection_runs(run_id TEXT PRIMARY KEY,thread_id TEXT,ordinal INTEGER,status TEXT);
+        INSERT INTO orchestration_v2_projection_threads VALUES
+            ('thread:a','A',NULL,'{}','2026-10-01T00:00:00Z'),
+            ('thread:b','B',NULL,'{}','2026-10-02T00:00:00Z');
+        INSERT INTO orchestration_v2_projection_runs VALUES
+            ('run-a','thread:a',1,'running'),('run-b','thread:b',1,'completed');
+    "#).unwrap();
+    let fields = "thread_id,latest_run.status,updated_at";
+    let out = run_args(home.path(), &["b", "a", "--fields", fields]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "thread:b\tcompleted\t2026-10-02T00:00:00Z\nthread:a\trunning\t2026-10-01T00:00:00Z\n"
+    );
+    let out = run_args(home.path(), &["b", "a", "--fields", fields, "--json"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        concat!(
+            "{\"thread_id\":\"thread:b\",\"latest_run.status\":\"completed\",\"updated_at\":\"2026-10-02T00:00:00Z\"}\n",
+            "{\"thread_id\":\"thread:a\",\"latest_run.status\":\"running\",\"updated_at\":\"2026-10-01T00:00:00Z\"}\n"
+        )
+    );
+    let out = run_args(home.path(), &["b", "a", "--json"]);
+    assert!(out.status.success());
+    let states: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(states.as_array().unwrap().len(), 2);
+    assert_eq!(states[0]["thread_id"], "thread:b");
+    assert_eq!(states[1]["thread_id"], "thread:a");
+    let out = run_args(home.path(), &["a", "missing", "--fields", "thread_id"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no T3 thread matches"));
+    let out = run_args(home.path(), &["a", "--json"]);
+    assert!(out.status.success());
+    let state: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(state["updated_at"], "2026-10-01T00:00:00Z");
+    // Invalid fields must fail even when there is no store to read.
+    let empty_home = tempfile::tempdir().unwrap();
+    let out = run_args(empty_home.path(), &["a", "--fields", "bogus"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("unknown field \"bogus\"; fields:"));
+}
