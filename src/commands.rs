@@ -1076,6 +1076,36 @@ pub fn classify_touch(e: &Event, needle: &str) -> &'static str {
     }
     "mention"
 }
+/// Every way a transcript can spell `path`: as given, with `/` for `\`, and each of
+/// those JSON-escaped once (a tool input object, or a raw JSONL line) and twice (a
+/// JSON string argument on a JSONL line). Windows paths hold backslashes, so the
+/// plain spelling alone never matches what the stores hold.
+pub fn path_spellings(path: &str) -> Vec<String> {
+    let mut plain = vec![path.to_owned()];
+    if path.contains('\\') {
+        plain.push(path.replace('\\', "/"));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for p in plain {
+        let once = p.replace('\\', r"\\");
+        let twice = once.replace('\\', r"\\");
+        for v in [p, once, twice] {
+            if !out.contains(&v) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+/// Whether `text` names any spelling; Windows paths compare without case.
+fn names_path(text: &str, spellings: &[String]) -> bool {
+    if cfg!(windows) {
+        let text = text.to_lowercase();
+        spellings.iter().any(|n| text.contains(&n.to_lowercase()))
+    } else {
+        spellings.iter().any(|n| text.contains(n.as_str()))
+    }
+}
 pub fn touched<I, T>(
     ctx: &Context,
     rows_events: I,
@@ -1111,12 +1141,17 @@ where
     } else {
         format!("file: {} (not on disk now)\n", ctx.tilde(&target))
     };
+    let spellings = path_spellings(&needle);
     let mut calls = vec![];
     for item in rows_events {
         let (r, events) = item.borrow();
         for e in events {
-            if e.role == "tool" && event_text(e).contains(&needle) {
-                let kind = classify_touch(e, &needle);
+            if e.role == "tool" && names_path(&event_text(e), &spellings) {
+                let kind = spellings
+                    .iter()
+                    .map(|n| classify_touch(e, n))
+                    .find(|k| *k == "write")
+                    .unwrap_or_else(|| classify_touch(e, &needle));
                 if !all && ["read", "mention"].contains(&kind) {
                     continue;
                 }
@@ -1722,6 +1757,25 @@ mod tests {
                 .unwrap()
                 .starts_with("1:")
         );
+    }
+    #[test]
+    fn path_spellings_cover_json_escaped_windows_paths() {
+        let p = r"C:\Users\me\memo.md";
+        let got = path_spellings(p);
+        for want in [
+            p,
+            r"C:\\Users\\me\\memo.md",
+            r"C:\\\\Users\\\\me\\\\memo.md",
+            "C:/Users/me/memo.md",
+        ] {
+            assert!(got.iter().any(|g| g == want), "{want} missing from {got:?}");
+        }
+        // An object input renders through python_json, which escapes once.
+        let e = tool("Write", json!({"file_path": p}));
+        assert!(!event_text(&e).contains(p));
+        assert!(names_path(&event_text(&e), &got));
+        assert_eq!(classify_touch(&e, p), "write");
+        assert_eq!(path_spellings("/a/b.md"), vec!["/a/b.md".to_owned()]);
     }
     #[test]
     fn touched_reports_creator_and_last_writer_despite_limit() {

@@ -1176,7 +1176,29 @@ fn execute_with_writers(
                     .position(|h| *h == s(r, "harness"))
                     .unwrap_or(5)
             });
-            let rows = search::prefilter_candidates(ctx, rows, &[needle], search::roles("all")?)?;
+            // Keep a session when any transcript spelling of the path is on disk.
+            let queries: Vec<Vec<String>> = commands::path_spellings(&needle)
+                .into_iter()
+                .map(|n| vec![n])
+                .collect();
+            let hits = search::prefilter_candidates_multi(
+                ctx,
+                rows.clone(),
+                &queries,
+                search::roles("all")?,
+            )?;
+            let key = |r: &Session| {
+                (
+                    s(r, "harness").to_owned(),
+                    s(r, "id").to_owned(),
+                    s(r, "path").to_owned(),
+                )
+            };
+            let kept: std::collections::HashSet<_> = hits.iter().flatten().map(key).collect();
+            let rows: Vec<Session> = rows
+                .into_iter()
+                .filter(|r| kept.contains(&key(r)))
+                .collect();
             commands::touched(
                 ctx,
                 load_events(ctx, rows),
