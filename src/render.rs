@@ -31,6 +31,67 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
 pub fn tool_summary_unclipped(name: &str, input: &Value) -> String {
     tool_summary_limit(name, input, usize::MAX)
 }
+/// The input fields a tool summary shows, in order of preference.
+const SUMMARY_KEYS: [&str; 12] = [
+    "command",
+    "cmd",
+    "file_path",
+    "path",
+    "filePath",
+    "pattern",
+    "query",
+    "url",
+    "description",
+    "prompt",
+    "code",
+    "input",
+];
+/// The tool input `show --full` prints, losslessly. A text input (Codex code mode,
+/// patches) is printed as is. An object prints the field the summary picks first,
+/// strings byte for byte, then every other field on its own indented line; arrays
+/// and other values print as JSON so argument boundaries survive.
+pub fn tool_input_verbatim(_name: &str, input: &Value) -> String {
+    let parsed;
+    let input = match input.as_str() {
+        Some(text) => match serde_json::from_str::<Value>(text) {
+            Ok(v) if v.is_object() => {
+                parsed = v;
+                &parsed
+            }
+            _ => return text.replace('\0', ""),
+        },
+        None => input,
+    };
+    let Some(obj) = input.as_object() else {
+        return if input.is_null() {
+            String::new()
+        } else {
+            input.to_string()
+        };
+    };
+    let field = |v: &Value| match v {
+        Value::String(s) => s.replace('\0', ""),
+        v => v.to_string(),
+    };
+    let Some(primary) = SUMMARY_KEYS
+        .iter()
+        .copied()
+        .find(|k| obj.get(*k).is_some_and(truth))
+    else {
+        return input.to_string();
+    };
+    let mut out = if ["command", "cmd", "code", "input"].contains(&primary) {
+        field(&obj[primary])
+    } else {
+        format!("{primary}={}", field(&obj[primary]))
+    };
+    for (k, v) in obj {
+        if k != primary && !v.is_null() {
+            out.push_str(&format!("\n    {k}: {}", field(v)));
+        }
+    }
+    out
+}
 fn tool_summary_limit(_name: &str, input: &Value, width: usize) -> String {
     if let Some(src) = input.as_str().filter(|s| s.contains("tools.")) {
         static N: LazyLock<Regex> =
@@ -92,20 +153,7 @@ fn tool_summary_limit(_name: &str, input: &Value, width: usize) -> String {
             one_line(&python_json(input), width)
         };
     }
-    for key in [
-        "command",
-        "cmd",
-        "file_path",
-        "path",
-        "filePath",
-        "pattern",
-        "query",
-        "url",
-        "description",
-        "prompt",
-        "code",
-        "input",
-    ] {
+    for key in SUMMARY_KEYS {
         if let Some(v) = input.get(key).filter(|v| truth(v)) {
             let val = if let Some(a) = v.as_array() {
                 a.iter().map(py_str).collect::<Vec<_>>().join(" ")
@@ -298,6 +346,14 @@ pub fn turns_of(events: &[Event]) -> Vec<Vec<Event>> {
     }
     turns
 }
+/// Under `--full`, tool calls and their results carry the call id so a result can be
+/// matched to its call: ` [toolu_…]` after the tool name, ` [toolu_…]` after the arrow.
+fn call_id(full: bool, id: Option<&str>) -> String {
+    match id.filter(|s| full && !s.is_empty()) {
+        Some(id) => format!(" [{id}]"),
+        None => String::new(),
+    }
+}
 pub fn render_event(e: &Event, full: bool, results: bool) -> String {
     let ts = if e.ts.is_some() {
         fmt_ts(e.ts)[11..].to_string()
@@ -331,17 +387,29 @@ pub fn render_event(e: &Event, full: bool, results: bool) -> String {
                 clip(&e.text, 2500)
             })
         ),
-        "tool" => format!(
-            "{ts}   tool {}: {}",
-            e.name.as_deref().unwrap_or("None"),
-            redact(&tool_summary(
-                e.name.as_deref().unwrap_or(""),
-                e.input.as_ref().unwrap_or(&Value::Null)
-            ))
-        ),
+        "tool" => {
+            let name = e.name.as_deref().unwrap_or("");
+            let input = e.input.as_ref().unwrap_or(&Value::Null);
+            format!(
+                "{ts}   tool {}{}: {}",
+                e.name.as_deref().unwrap_or("None"),
+                call_id(full, e.id.as_deref()),
+                redact(&if full {
+                    tool_input_verbatim(name, input)
+                } else {
+                    tool_summary(name, input)
+                })
+            )
+        }
         "result" if e.error || results => format!(
-            "{ts}   {}{}",
-            if e.error { "! tool error: " } else { "-> " },
+            "{ts}   {}{}{}",
+            if e.error { "! tool error" } else { "->" },
+            match call_id(full, e.tool_use_id.as_deref()) {
+                id if id.is_empty() && e.error => ": ".to_string(),
+                id if id.is_empty() => " ".to_string(),
+                id if e.error => format!("{id}: "),
+                id => format!("{id} "),
+            },
             redact(&if full {
                 e.text.clone()
             } else {
@@ -538,6 +606,94 @@ mod tests {
                 format!("        [notice] {full_body}")
             );
         }
+    }
+    #[test]
+    fn full_tool_calls_keep_the_input_verbatim_and_tag_call_ids() {
+        // A command past the 160-char clip, with a newline, a run of spaces and a quote.
+        let command = format!(
+            "X=/tmp/a; diff <(sed 's/a7973897885/b/' f)  {}\n  echo \"done\"",
+            "y".repeat(400)
+        );
+        let mut call = Event::new("tool", "", None);
+        call.name = Some("Bash".into());
+        call.input = Some(json!({"command": command, "description": "diff"}));
+        call.id = Some("toolu_01ABC".into());
+        let mut result = Event::new("result", "ok\nsecond", None);
+        result.tool_use_id = Some("toolu_01ABC".into());
+
+        assert_eq!(
+            render_event(&call, true, false),
+            format!("        tool Bash [toolu_01ABC]: {command}\n    description: diff")
+        );
+        assert_eq!(
+            render_event(&result, true, true),
+            "        -> [toolu_01ABC] ok\nsecond"
+        );
+        result.error = true;
+        assert_eq!(
+            render_event(&result, true, true),
+            "        ! tool error [toolu_01ABC]: ok\nsecond"
+        );
+
+        // Without --full the summary still clips to one 160-char line and carries no id.
+        let compact = render_event(&call, false, false);
+        assert!(!compact.contains("toolu_01ABC"));
+        let summary = compact.strip_prefix("        tool Bash: ").unwrap();
+        assert_eq!(summary.chars().count(), 160);
+        assert!(summary.ends_with('…') && !summary.contains('\n'));
+        result.error = false;
+        assert_eq!(render_event(&result, false, true), "        -> ok second");
+    }
+    #[test]
+    fn full_tool_inputs_are_lossless_for_code_mode_structured_and_array_inputs() {
+        let tool = |name: &str, input: Value| {
+            let mut e = Event::new("tool", "", None);
+            e.name = Some(name.into());
+            e.input = Some(input);
+            render_event(&e, true, false)
+        };
+        // Codex code mode: two commands and the logic around them, printed as is.
+        let src = "const a = await tools.exec_command({cmd: \"git status\"});\nif (a.ok) {\n  await tools.exec_command({cmd: \"git   diff\"});\n}";
+        assert_eq!(
+            tool("exec", json!(src)),
+            format!("        tool exec: {src}")
+        );
+        // Claude Write: the path first, then the whole content on its own field line.
+        let content = "line one\n\n  indented line two\n";
+        assert_eq!(
+            tool(
+                "Write",
+                json!({"file_path": "/r/a.txt", "content": content})
+            ),
+            format!("        tool Write: file_path=/r/a.txt\n    content: {content}")
+        );
+        // Codex function_call arguments arrive as a JSON string; an argv array keeps its boundaries.
+        let args = json!({"command": ["bash", "-lc", "echo 'a b'"], "workdir": "/r"}).to_string();
+        assert_eq!(
+            tool("shell", json!(args)),
+            "        tool shell: [\"bash\",\"-lc\",\"echo 'a b'\"]\n    workdir: /r"
+        );
+        // An object with none of the summary keys prints as JSON.
+        assert_eq!(
+            tool("custom", json!({"a": 1, "b": [true]})),
+            "        tool custom: {\"a\":1,\"b\":[true]}"
+        );
+        // The compact summary is unchanged: first command only, one line.
+        let mut e = Event::new("tool", "", None);
+        e.name = Some("exec".into());
+        e.input = Some(json!(src));
+        assert_eq!(
+            render_event(&e, false, false),
+            "        tool exec: [exec_command] git status"
+        );
+    }
+    #[test]
+    fn full_tool_calls_still_redact_secrets() {
+        let mut call = Event::new("tool", "", None);
+        call.name = Some("Bash".into());
+        call.input = Some(json!({"command": "curl -H 'x: sk-abcdefghijklmnopqrstuvwxyz' u"}));
+        let out = render_event(&call, true, false);
+        assert!(!out.contains("sk-abcdefghijklmnopqrstuvwxyz") && out.contains("<redacted>"));
     }
     #[test]
     fn full_results_preserve_multiline_bodies_and_redact_secrets() {
