@@ -654,11 +654,17 @@ mod tests {
         };
         // Codex code mode: two commands and the logic around them, printed as is.
         let src = "const a = await tools.exec_command({cmd: \"git status\"});\nif (a.ok) {\n  await tools.exec_command({cmd: \"git   diff\"});\n}";
-        assert_eq!(tool("exec", json!(src)), format!("        tool exec: {src}"));
+        assert_eq!(
+            tool("exec", json!(src)),
+            format!("        tool exec: {src}")
+        );
         // Claude Write: the path first, then the whole content on its own field line.
         let content = "line one\n\n  indented line two\n";
         assert_eq!(
-            tool("Write", json!({"file_path": "/r/a.txt", "content": content})),
+            tool(
+                "Write",
+                json!({"file_path": "/r/a.txt", "content": content})
+            ),
             format!("        tool Write: file_path=/r/a.txt\n    content: {content}")
         );
         // Codex function_call arguments arrive as a JSON string; an argv array keeps its boundaries.
@@ -676,7 +682,10 @@ mod tests {
         let mut e = Event::new("tool", "", None);
         e.name = Some("exec".into());
         e.input = Some(json!(src));
-        assert_eq!(render_event(&e, false, false), "        tool exec: [exec_command] git status");
+        assert_eq!(
+            render_event(&e, false, false),
+            "        tool exec: [exec_command] git status"
+        );
     }
     #[test]
     fn full_tool_calls_still_redact_secrets() {
