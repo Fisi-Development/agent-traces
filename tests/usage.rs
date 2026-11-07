@@ -19,7 +19,7 @@ fn write(path: &Path, records: Vec<Value>) {
 fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
-    let assistant = |id, model, n| json!({"type":"assistant","timestamp":if n == 1 {"2026-11-03T12:00:10Z"} else if n == 5 {"2026-11-03T12:01:00Z"} else {"2026-11-03T12:01:30Z"},"message":{"id":id,"model":model,"content":if n == 2 {json!([{"type":"tool_use","id":format!("{id}-tool"),"name":"Read"},{"type":"tool_use","id":"extra-tool","name":"Edit"}])} else {json!([{"type":"tool_use","id":format!("{id}-tool"),"name":"Read"}])},"usage":{"input_tokens":n,"cache_read_input_tokens":2*n,"cache_creation_input_tokens":3*n,"output_tokens":4*n}}});
+    let assistant = |id, model, n| json!({"type":"assistant","timestamp":"2026-11-03T12:01:30Z","message":{"id":id,"model":model,"usage":{"input_tokens":n,"cache_read_input_tokens":2*n,"cache_creation_input_tokens":3*n,"output_tokens":4*n}}});
     write(
         &home.join(format!(".claude/projects/fixture/{CLAUDE}.jsonl")),
         vec![
@@ -31,17 +31,14 @@ fn fixture() -> tempfile::TempDir {
             assistant("msg-synthetic", "<synthetic>", 1000),
         ],
     );
-    let token = |total, input, cached, output| json!({"type":"event_msg","timestamp":if total == 100 {"2026-11-03T12:00:10Z"} else {"2026-11-03T12:01:00Z"},"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":input,"cached_input_tokens":cached,"output_tokens":output,"reasoning_output_tokens":7,"total_tokens":total}}}});
+    let token = |total, input, cached, output| json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":input,"cached_input_tokens":cached,"output_tokens":output,"reasoning_output_tokens":7,"total_tokens":total}}}});
     let rollout = home.join(".codex/sessions/2026/11/03/rollout-usage-codex.jsonl");
     write(
         &rollout,
         vec![
             json!({"type":"session_meta","payload":{"id":CODEX,"cwd":"/fixture","timestamp":"2026-11-03T12:00:00Z"}}),
             json!({"type":"event_msg","payload":{"type":"token_count","info":null}}),
-            json!({"type":"response_item","payload":{"type":"function_call","name":"exec_command"}}),
             token(100, 80, 30, 20),
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch"}}),
-            json!({"type":"response_item","payload":{"type":"local_shell_call"}}),
             token(250, 200, 120, 50),
             token(250, 200, 120, 50),
         ],
@@ -281,172 +278,4 @@ fn absent_usage_is_zero_and_unsupported_harness_is_null() {
         "usage is read for claude and codex sessions only"
     );
     assert!(got[2]["calls"].is_null());
-}
-
-#[test]
-fn per_call_rows_and_windows() {
-    let home = fixture();
-    for (id, expected) in [
-        (CLAUDE, [(3, 6, 9, 12, 30), (5, 10, 15, 20, 50)]),
-        (CODEX, [(50, 30, 0, 20, 100), (30, 90, 0, 30, 150)]),
-    ] {
-        let calls = rows(run(home.path(), &["usage", id, "--calls", "--json"]));
-        assert_eq!(calls.len(), 2);
-        for (call, (input, read, write, output, total)) in calls.iter().zip(expected) {
-            assert_eq!(call["id"], id);
-            assert_eq!(call["input_tokens"], input);
-            assert_eq!(call["cache_read_tokens"], read);
-            assert_eq!(call["cache_write_tokens"], write);
-            assert_eq!(call["output_tokens"], output);
-            assert_eq!(call["total_tokens"], total);
-        }
-        assert_eq!(calls[0]["ts"], "2026-11-03T12:00:10Z");
-        assert_eq!(calls[1]["ts"], "2026-11-03T12:01:00Z");
-        if id == CLAUDE {
-            assert_eq!(calls[0]["tools"], json!(["Read", "Edit"]));
-            assert!(calls[0]["reasoning_tokens"].is_null());
-        } else {
-            assert_eq!(calls[0]["tools"], json!(["exec_command"]));
-            assert_eq!(
-                calls[1]["tools"],
-                json!(["apply_patch", "local_shell_call"])
-            );
-            assert_eq!(calls[0]["reasoning_tokens"], 7);
-            assert_eq!(calls[1]["reasoning_tokens"], 0);
-        }
-        let session = rows(run(home.path(), &["usage", id, "--json"])).remove(0);
-        for key in [
-            "input_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "output_tokens",
-            "total_tokens",
-        ] {
-            assert_eq!(
-                calls.iter().map(|c| c[key].as_u64().unwrap()).sum::<u64>(),
-                session[key].as_u64().unwrap()
-            );
-        }
-        let window = rows(run(
-            home.path(),
-            &[
-                "usage",
-                id,
-                "--since",
-                "2026-11-03T12:01:00Z",
-                "--until",
-                "2026-11-03T12:01:00Z",
-                "--json",
-            ],
-        ))
-        .remove(0);
-        assert_eq!(window["calls"], 1);
-        for key in [
-            "input_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "output_tokens",
-            "reasoning_tokens",
-            "total_tokens",
-        ] {
-            assert_eq!(window[key], calls[1][key]);
-        }
-        assert_eq!(
-            window["window"],
-            json!({"since":"2026-11-03T12:01:00Z","until":"2026-11-03T12:01:00Z"})
-        );
-        assert_eq!(window["wall_s"], session["wall_s"]);
-        let empty = rows(run(
-            home.path(),
-            &["usage", id, "--until", "2026-11-02", "--json"],
-        ));
-        assert_eq!(empty[0]["calls"], 0);
-        let filtered = rows(run(
-            home.path(),
-            &[
-                "usage",
-                id,
-                "--calls",
-                "--since",
-                "2026-11-03T12:01:00Z",
-                "--json",
-            ],
-        ));
-        assert_eq!(filtered, calls[1..]);
-    }
-    let out = run(home.path(), &["usage", CLAUDE, "--calls"]);
-    assert!(out.status.success());
-    assert_eq!(
-        String::from_utf8(out.stdout)
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap(),
-        "id\tharness\tts\tmodel\tinput\tcache_read\tcache_write\toutput\treasoning\ttotal\ttools"
-    );
-}
-
-#[test]
-fn undated_calls_are_only_dropped_in_windows_and_notes_go_to_stderr() {
-    let home = fixture();
-    let transcript = home
-        .path()
-        .join(format!(".claude/projects/fixture/{CLAUDE}.jsonl"));
-    write(
-        &transcript,
-        vec![
-            json!({"type":"assistant","message":{"id":"undated","model":"fixture-model","usage":{"input_tokens":4}}}),
-            json!({"type":"assistant","timestamp":"2026-11-03T12:01:00Z","message":{"id":"undated","model":"fixture-model","usage":{"input_tokens":9}}}),
-            json!({"type":"assistant","message":{"id":"no-usage","model":"fixture-model"}}),
-        ],
-    );
-    let calls = rows(run(home.path(), &["usage", CLAUDE, "--calls", "--json"]));
-    assert_eq!(calls.len(), 1);
-    assert!(calls[0]["ts"].is_null());
-    assert_eq!(calls[0]["input_tokens"], 9);
-    assert!(
-        rows(run(
-            home.path(),
-            &[
-                "usage",
-                CLAUDE,
-                "--calls",
-                "--since",
-                "2026-11-01",
-                "--json"
-            ]
-        ))
-        .is_empty()
-    );
-    let window = rows(run(
-        home.path(),
-        &["usage", CLAUDE, "--since", "2026-11-01", "--json"],
-    ));
-    assert_eq!(window[0]["calls"], 0);
-    assert_eq!(window[0]["input_tokens"], 0);
-    assert_eq!(window[0]["window"]["until"], Value::Null);
-    fs::remove_file(
-        home.path()
-            .join(".codex/sessions/2026/11/03/rollout-usage-codex.jsonl"),
-    )
-    .unwrap();
-    let out = run(home.path(), &["usage", CODEX, "--calls", "--json"]);
-    assert!(out.status.success());
-    assert!(out.stdout.is_empty());
-    assert_eq!(
-        // Windows writes stderr lines with CRLF.
-        String::from_utf8(out.stderr).unwrap().replace("\r\n", "\n"),
-        "usage-codex: transcript not found\n"
-    );
-    t3(home.path());
-    let out = run(
-        home.path(),
-        &["usage", "thread-missing", "--calls", "--json"],
-    );
-    assert!(out.status.success());
-    assert!(out.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(out.stderr).unwrap().replace("\r\n", "\n"),
-        "thread-missing: provider transcript not found\n"
-    );
 }

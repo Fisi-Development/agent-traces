@@ -179,7 +179,6 @@ impl StoreAdapter for OpenCode {
                                         .map(str::to_owned)
                                         .unwrap_or_else(|| body.to_string());
                                     let mut e = Event::new("result", text, ts);
-                                    e.tool_use_id = opt_s(b, "id");
                                     e.error =
                                         s(state, "status") == "error" || db::truth(&state["error"]);
                                     out.push(e);
@@ -255,8 +254,5 @@ INSERT INTO session_v2 VALUES('child','main','/repo','Child',NULL,'agent',170000
         assert_eq!(events[0].name.as_deref(), Some("read"));
         assert_eq!(events[1].text, "broken");
         assert!(events[1].error);
-        // The result carries its call's id, so `show --full` can pair them.
-        assert_eq!(events[0].id.as_deref(), Some("call"));
-        assert_eq!(events[1].tool_use_id.as_deref(), Some("call"));
     }
 }

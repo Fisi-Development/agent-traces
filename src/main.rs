@@ -218,12 +218,6 @@ enum Command {
     Usage {
         #[arg(required = true)]
         ids: Vec<String>,
-        #[arg(long)]
-        calls: bool,
-        #[arg(long)]
-        since: Option<String>,
-        #[arg(long)]
-        until: Option<String>,
         #[command(flatten)]
         format: Format,
     },
@@ -920,48 +914,18 @@ fn execute_with_writers(
                 ..Default::default()
             })
         }
-        Command::Usage {
-            ids,
-            calls,
-            since,
-            until,
-            format,
-        } => {
-            let since = since
-                .as_deref()
-                .map(|s| parse_since(s, ctx.now))
-                .transpose()?;
-            let until = until
-                .as_deref()
-                .map(|s| parse_since(s, ctx.now))
-                .transpose()?;
-            let sessions = ids
+        Command::Usage { ids, format } => {
+            let rows = ids
                 .iter()
                 .map(|id| agent_traces::usage::session(ctx, id))
                 .collect::<Result<Vec<_>>>()?;
-            let mut rows = Vec::new();
-            let mut stderr = String::new();
-            for (mut session, mut call_rows) in sessions {
-                agent_traces::usage::window(&mut session, &mut call_rows, since, until);
-                if *calls {
-                    if let Some(note) = session["note"].as_str() {
-                        stderr.push_str(&format!("{}: {note}\n", s(&session, "id")));
-                    }
-                    rows.extend(call_rows);
-                } else {
-                    rows.push(session);
-                }
-            }
             let stdout = if format.json {
                 rows.iter().map(|row| format!("{row}\n")).collect()
-            } else if *calls {
-                agent_traces::usage::calls_text(&rows)
             } else {
                 agent_traces::usage::text(&rows)
             };
             Ok(CommandOutput {
                 stdout: redact(&stdout),
-                stderr: redact(&stderr),
                 ..Default::default()
             })
         }
