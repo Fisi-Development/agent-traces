@@ -434,7 +434,8 @@ fn undated_calls_are_only_dropped_in_windows_and_notes_go_to_stderr() {
     assert!(out.status.success());
     assert!(out.stdout.is_empty());
     assert_eq!(
-        String::from_utf8(out.stderr).unwrap(),
+        // Windows writes stderr lines with CRLF.
+        String::from_utf8(out.stderr).unwrap().replace("\r\n", "\n"),
         "usage-codex: transcript not found\n"
     );
     t3(home.path());
@@ -445,7 +446,7 @@ fn undated_calls_are_only_dropped_in_windows_and_notes_go_to_stderr() {
     assert!(out.status.success());
     assert!(out.stdout.is_empty());
     assert_eq!(
-        String::from_utf8(out.stderr).unwrap(),
+        String::from_utf8(out.stderr).unwrap().replace("\r\n", "\n"),
         "thread-missing: provider transcript not found\n"
     );
 }
