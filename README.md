@@ -192,6 +192,18 @@ per session (one JSON object each with `--json`), where `address` is the
 and ignores `--limit`. An unknown field name is an error. `--all` drops the
 default seven-day window; from 0.2.8 an explicit `--since` still applies with it.
 
+Session rows include `launch_surface`, `launch_subject`, `launch_launcher`, and
+`launch_parent`, parsed from a launch stamp line `[harbor-launch v1 key=value ...]`
+at the start of a line in the first prompt: the first such stamp within the first 4,000 characters of the
+full first user message (Claude and Codex; other harnesses use the 600-character
+`first_prompt` excerpt), so a stamp after a wrapper's header still counts.
+Missing values are null; percent-encoded values are decoded.
+`ls` and `find` accept repeatable `--surface VALUE` and `--launcher VALUE` filters
+with exact matching before `--limit`; `--surface none` selects unstamped sessions.
+The launch fields also work with `--fields` and `ls --count-by`.
+`usage --json` includes a `launch` object with `surface`, `subject`, `launcher`,
+and `parent` keys, each null when absent. Usage text output is unchanged.
+
 `find` prints each session's header and up to `--hits` matching lines
 (default 3) of `--width` characters (default 220). `--ids` prints only one
 address per matching session, best first, in the same form as `ls --fields

@@ -797,17 +797,6 @@ pub fn handoff_data(ctx: &Context, row: &Session, events: &[Event], kids: &[Sess
     });
     json!({"session":row,"verification":"unverified","goal":h.prompts.first().map(|e|extract(e,3000,false)),"requests":requests,"last_assistant":h.assistant.last().map(|e|extract(e,6000,false)),"earlier_conclusions":tail(earlier,4).iter().map(|e|extract(e,400,true)).collect::<Vec<_>>(),"last_plan":plan,"files":h.files.iter().take(80).collect::<Vec<_>>(),"commands":tail(&h.commands,25).iter().map(|e|{let mut event=(*e).clone();event.text=tool_summary_unclipped(e.name.as_deref().unwrap_or(""),e.input.as_ref().unwrap_or(&Value::Null));extract(&event,160,true)}).collect::<Vec<_>>(),"errors":tail(&h.errors,15).iter().map(|e|extract(e,240,true)).collect::<Vec<_>>(),"tickets":h.tickets.iter().take(60).collect::<Vec<_>>(),"pull_requests":h.urls.iter().take(20).collect::<Vec<_>>(),"children":kids.iter().take(30).collect::<Vec<_>>(),"counts":{"turns":turns_of(&h.events).len(),"requests":h.prompts.len(),"tool_calls":h.tools.len(),"commands":h.commands.len(),"errors":h.errors.len(),"files":h.files.len(),"tickets":h.tickets.len(),"pull_requests":h.urls.len(),"children":kids.len()},"truncation":{"requests":false,"earlier_conclusions":earlier.len()>4,"files":h.files.len()>80,"commands":h.commands.len()>25,"errors":h.errors.len()>15,"tickets":h.tickets.len()>60,"pull_requests":h.urls.len()>20,"children":kids.len()>30}})
 }
-fn row_json(row: &Session) -> Value {
-    let mut d = row.clone();
-    for k in ["started", "updated"] {
-        d[k] = d
-            .get(k)
-            .and_then(parse_ts)
-            .map(|t| json!(iso(t)))
-            .unwrap_or(Value::Null);
-    }
-    d
-}
 /// The span of events `failures` scores. Session selection (`--since` against
 /// last activity) is separate: a session active this week can hold errors
 /// from weeks ago, and those must not count toward this week's score.
@@ -980,7 +969,7 @@ where
     };
     for (score, row, te, se, co, cp, np, bad) in scored.iter().take(shown) {
         if json_output {
-            let mut d = row_json(row);
+            let mut d = crate::core::legacy_row(row);
             for (k, n) in [
                 ("score", score),
                 ("tool_errors", te),

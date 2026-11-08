@@ -335,6 +335,13 @@ pub fn scope_summary(ctx: &Context) -> String {
 }
 pub fn legacy_row(row: &Session) -> Session {
     let mut r = row.clone();
+    // Claude and Codex adapters read the stamp from the full first message
+    // (launch::WINDOW); other rows fall back to the first_prompt excerpt.
+    if row.get("launch_surface").is_none() {
+        for (key, value) in crate::launch::fields(s(row, "first_prompt")) {
+            r[key] = value;
+        }
+    }
     for key in ["started", "updated"] {
         r[key] = if let Some(d) = parse_ts(&r[key]) {
             Value::String(crate::util::iso(d))
@@ -358,6 +365,10 @@ pub const LS_FIELDS: &[&str] = &[
     "branch",
     "title",
     "first_prompt",
+    "launch_surface",
+    "launch_subject",
+    "launch_launcher",
+    "launch_parent",
     "started",
     "updated",
     "model",
@@ -400,6 +411,33 @@ pub fn ls_field(row: &Session, name: &str) -> Value {
         row.get(name).cloned().unwrap_or(Value::Null)
     }
 }
+/// Launch filters share the finalized fields used by legacy output and usage.
+pub fn launch_keep(row: &Session, surfaces: &[String], launchers: &[String]) -> bool {
+    if surfaces.is_empty() && launchers.is_empty() {
+        return true;
+    }
+    let row = legacy_row(row);
+    (surfaces.is_empty()
+        || surfaces.iter().any(|v| {
+            if v == "none" {
+                [
+                    "launch_surface",
+                    "launch_subject",
+                    "launch_launcher",
+                    "launch_parent",
+                ]
+                .iter()
+                .all(|k| row[*k].is_null())
+            } else {
+                row["launch_surface"].as_str() == Some(v.as_str())
+            }
+        }))
+        && (launchers.is_empty()
+            || launchers
+                .iter()
+                .any(|v| row["launch_launcher"].as_str() == Some(v.as_str())))
+}
+
 /// `ls --grep` and `--t3`: a session matches when any term appears,
 /// case-insensitively, in its ids, titles, first prompt, cwd or branch.
 pub fn ls_keep(row: &Session, terms: &[String], t3_only: bool) -> bool {

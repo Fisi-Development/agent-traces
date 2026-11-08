@@ -105,7 +105,7 @@ impl Codex {
                 let parent=parents.get(s(r,"id")).cloned().unwrap_or(Value::Null);let src=s(r,"source");let sub=db::truth(&parent)||(!r["thread_source"].is_null()&&!matches!(s(r,"thread_source"),""|"user"))||src.contains("subagent");
                 let mut name=r["name"].clone();if !db::truth(&name)&&sub&&db::truth(&r["agent_nickname"]) {name=json!(format!("{} ({})",s(r,"agent_nickname"),if s(r,"agent_role").is_empty(){"subagent"}else{s(r,"agent_role")}));}
                 json!({"harness":"codex","home":ctx.tilde(home),"id":r["id"],"parent":parent,"kind":if sub{"subagent"}else if src=="exec"{"worker"}else{"main"},"cwd":r["cwd"],"branch":r["git_branch"],"title":if db::truth(&name){name}else{Value::Null},"first_prompt":if r.get("first_user_message").is_some(){json!(s(r,"first_user_message").chars().take(600).collect::<String>())}else{Value::Null},"started":db::stamp(&r["created_at"]),"updated":db::stamp(&r["updated_at"]),"model":r["model"],"path":r["rollout_path"],"archived":db::truth(&r["archived"]),"originator":r["originator"],"nickname":r["agent_nickname"]})
-            }).collect())
+            }).zip(rows.iter()).map(|(mut row,r):(Value,_)|{for (key,value) in crate::launch::fields(s(r,"first_user_message")){row[key]=value;}row}).collect())
         })();
         match result {
             Ok(r) => {

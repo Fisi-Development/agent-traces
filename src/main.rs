@@ -87,6 +87,12 @@ enum Command {
         command: T3Command,
     },
     Ls {
+        /// Keep an exact launch surface; repeat for several, or use none for unstamped sessions
+        #[arg(long, value_name = "VALUE")]
+        surface: Vec<String>,
+        /// Keep an exact launcher; repeat for several
+        #[arg(long, value_name = "VALUE")]
+        launcher: Vec<String>,
         #[command(flatten)]
         common: Common,
         /// Drop the default 7-day window; an explicit --since still applies
@@ -121,6 +127,12 @@ enum Command {
         include_machine: bool,
     },
     Find {
+        /// Keep an exact launch surface; repeat for several, or use none for unstamped sessions
+        #[arg(long, value_name = "VALUE")]
+        surface: Vec<String>,
+        /// Keep an exact launcher; repeat for several
+        #[arg(long, value_name = "VALUE")]
+        launcher: Vec<String>,
         #[arg(required_unless_present="query",num_args=1.., conflicts_with="query")]
         terms: Vec<String>,
         /// Run independent literal queries, preserving a group for each query
@@ -599,6 +611,8 @@ fn execute_with_writers(
             })
         }
         Command::Ls {
+            surface,
+            launcher,
             common,
             all,
             limit,
@@ -620,7 +634,7 @@ fn execute_with_writers(
             }
             let filters = common.filters(ctx, if *all { None } else { Some("7d") })?;
             let mut rows = core::gather(ctx, &filters)?;
-            rows.retain(|r| core::ls_keep(r, grep, *t3));
+            rows.retain(|r| core::ls_keep(r, grep, *t3) && core::launch_keep(r, surface, launcher));
             if let Some(field) = count_by {
                 return Ok(ls_counts(ctx, &rows, field, &filters, common.format.json));
             }
@@ -658,6 +672,8 @@ fn execute_with_writers(
             })
         }
         Command::Find {
+            surface,
+            launcher,
             terms,
             query,
             common,
@@ -686,6 +702,7 @@ fn execute_with_writers(
             if !query.is_empty() {
                 let rows: Vec<_> = core::gather(ctx, &common.filters(ctx, None)?)?
                     .into_iter()
+                    .filter(|row| core::launch_keep(row, surface, launcher))
                     .filter(|row| {
                         *include_self
                             || !["id", "parent", "provider_id"]
@@ -713,6 +730,8 @@ fn execute_with_writers(
                 let mut found = false;
                 for (q, candidates) in query.iter().zip(candidates) {
                     let command = Command::Find {
+                        surface: surface.clone(),
+                        launcher: launcher.clone(),
                         terms: vec![q.clone()],
                         query: vec![],
                         common: common.clone(),
@@ -790,6 +809,7 @@ fn execute_with_writers(
                 Some(result) => result,
                 None => {
                     let mut rows = core::gather(ctx, &common.filters(ctx, None)?)?;
+                    rows.retain(|r| core::launch_keep(r, surface, launcher));
                     if common.format.v1() {
                         rows.sort_by_key(|r| contract::identity_key(&contract::identity(ctx, r)));
                     }

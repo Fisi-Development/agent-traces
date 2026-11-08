@@ -34,6 +34,7 @@ pub fn session(ctx: &Context, id: &str) -> Result<(Value, Vec<Value>)> {
 }
 
 fn extract(ctx: &Context, row: &Session, t3_thread: Value) -> (Value, Vec<Value>) {
+    let finalized = core::legacy_row(row);
     let mut call_rows = Vec::new();
     let wall = parse_ts(&row["started"])
         .zip(parse_ts(&row["updated"]))
@@ -42,6 +43,7 @@ fn extract(ctx: &Context, row: &Session, t3_thread: Value) -> (Value, Vec<Value>
         "model":row["model"],"path":row["path"],"started":row["started"],"updated":row["updated"],
         "wall_s":wall,"calls":null,"input_tokens":null,"cache_read_tokens":null,"cache_write_tokens":null,
         "output_tokens":null,"reasoning_tokens":null,"total_tokens":null});
+    out["launch"] = json!({"surface":finalized["launch_surface"],"subject":finalized["launch_subject"],"launcher":finalized["launch_launcher"],"parent":finalized["launch_parent"]});
     let harness = s(row, "harness");
     if !["claude", "codex"].contains(&harness) {
         out["note"] = json!(if harness == "t3" {

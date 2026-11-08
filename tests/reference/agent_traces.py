@@ -1391,6 +1391,18 @@ def fmt_row(r, width=90):
 
 def row_json(r):
     d = dict(r)
+    from urllib.parse import unquote
+    stamp = re.search(r"\[harbor-launch v1((?: [a-z_]+=[A-Za-z0-9\-_.:/#@+%]+)+)\]", r.get("first_prompt") or "")
+    launch = {}
+    if stamp:
+        for pair in stamp.group(1).split():
+            key, value = pair.split("=", 1)
+            try:
+                launch[key] = unquote(value, errors="strict")
+            except UnicodeDecodeError:
+                launch[key] = value
+    for key in ("surface", "subject", "launcher", "parent"):
+        d["launch_" + key] = launch.get(key)
     for k in ("started", "updated"):
         dt = parse_ts(d.get(k))
         d[k] = dt.isoformat() if dt else None

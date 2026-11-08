@@ -176,7 +176,7 @@ fn sub_files(ctx: &Context, home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 fn load_cache(ctx: &Context) -> Value {
-    fs::read(ctx.cache_dir.join("claude-meta-rust-v2.json"))
+    fs::read(ctx.cache_dir.join("claude-meta-rust-v3.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .filter(Value::is_object)
@@ -185,7 +185,7 @@ fn load_cache(ctx: &Context) -> Value {
 fn save_cache(ctx: &Context, cache: &Value) {
     use std::io::Write;
     let destination =
-        match crate::core::ensure_output_path(ctx, &ctx.cache_dir.join("claude-meta-rust-v2.json"))
+        match crate::core::ensure_output_path(ctx, &ctx.cache_dir.join("claude-meta-rust-v3.json"))
         {
             Ok(path) => path,
             Err(_) => return,
@@ -195,7 +195,7 @@ fn save_cache(ctx: &Context, cache: &Value) {
     let _ = (|| -> std::io::Result<()> {
         fs::create_dir_all(cache_dir)?;
         let temp = cache_dir.join(format!(
-            "claude-meta-rust-v2.{}.{}.tmp",
+            "claude-meta-rust-v3.{}.{}.tmp",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
@@ -245,6 +245,9 @@ fn extract(ctx: &Context, path: &Path) -> Value {
                     let (role, text) = classify_claude_text(&text, &r);
                     if role == "prompt" || role == "command" {
                         m["first_prompt"] = json!(text.chars().take(600).collect::<String>());
+                        for (key, value) in crate::launch::fields(&text) {
+                            m[key] = value;
+                        }
                     }
                 }
             }
@@ -312,6 +315,14 @@ fn meta(ctx: &Context, path: &Path, home: &Path, sub: bool, cache: &mut Value) -
         m
     };
     let mut row = json!({"harness":"claude","home":ctx.tilde(home),"id":path.file_stem().unwrap_or_default().to_string_lossy(),"parent":null,"kind":"main","cwd":m["cwd"],"branch":m["branch"],"title":m["title"],"first_prompt":m["first_prompt"],"started":m["started"],"updated":m["updated"],"model":m["model"],"entrypoint":m["entrypoint"],"path":key,"agent_type":null});
+    for key in [
+        "launch_surface",
+        "launch_subject",
+        "launch_launcher",
+        "launch_parent",
+    ] {
+        row[key] = m.get(key).cloned().unwrap_or(Value::Null);
+    }
     if sub {
         let root = path
             .ancestors()

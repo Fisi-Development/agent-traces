@@ -99,6 +99,7 @@ fn usage_deduplicates_and_preserves_order_and_columns() {
         "output_tokens",
         "reasoning_tokens",
         "total_tokens",
+        "launch",
     ];
     for row in &got {
         assert_eq!(
