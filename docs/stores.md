@@ -69,7 +69,7 @@ Surveyed 2026-09-23 on the author's machines; the counts and dates below come fr
 
 ## Session usage
 
-`usage ID...` reads full Claude and Codex transcripts without changing `ls` rows.
+`usage ID...` reads full Claude and Codex transcripts and OpenCode token records without changing `ls` rows.
 Claude assistant messages are deduplicated by `message.id` with the last record
 winning, and synthetic messages are skipped. Usage includes input, cache reads,
 cache creation and output tokens. Codex `event_msg` / `token_count` records supply

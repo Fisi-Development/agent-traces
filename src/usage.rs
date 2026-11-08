@@ -1,5 +1,12 @@
 //! Full-transcript usage extraction, kept separate from session listing.
-use crate::{context::Context, core, model::Session, storage::jsonl, util::*};
+use crate::{
+    adapters::opencode::OpenCode,
+    context::Context,
+    core,
+    model::Session,
+    storage::{jsonl, sqlite},
+    util::*,
+};
 use anyhow::Result;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Value, json};
@@ -24,7 +31,7 @@ pub fn session(ctx: &Context, id: &str) -> Result<(Value, Vec<Value>)> {
         }
     };
     if !t3_thread.is_null()
-        && s(&row, "harness") != "t3"
+        && !["t3", "opencode"].contains(&s(&row, "harness"))
         && !jsonl::exists(&ctx.expand(s(&row, "path")))
     {
         let thread = core::pick_one(ctx, id, false)?;
@@ -45,11 +52,77 @@ fn extract(ctx: &Context, row: &Session, t3_thread: Value) -> (Value, Vec<Value>
         "output_tokens":null,"reasoning_tokens":null,"total_tokens":null});
     out["launch"] = json!({"surface":finalized["launch_surface"],"subject":finalized["launch_subject"],"launcher":finalized["launch_launcher"],"parent":finalized["launch_parent"]});
     let harness = s(row, "harness");
+    if harness == "opencode" {
+        let path = OpenCode::path(ctx);
+        let messages = sqlite::open(ctx, "opencode", &path).and_then(|con| {
+            sqlite::query(
+                &con,
+                "select json_valid(data) as valid, case when json_valid(data) then json_extract(data,'$.tokens') end as tokens, case when json_valid(data) then json_extract(data,'$.time.created') end as created, case when json_valid(data) then json_extract(data,'$.model.id') end as model, time_created from session_message where session_id = ?1 and type in ('assistant','compaction') order by seq",
+                &[row["id"].clone()],
+            ).inspect_err(|error| sqlite::report(ctx, "opencode", &path, error))
+        });
+        let messages = match messages {
+            Ok(messages) => messages,
+            Err(_) => {
+                out["note"] = json!("store unreadable");
+                return (out, call_rows);
+            }
+        };
+        let n = |value: &Value, key: &str| value[key].as_u64().unwrap_or(0);
+        let keys = [
+            "input_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+        ];
+        for key in keys {
+            out[key] = json!(0);
+        }
+        for message in messages {
+            // Only the token, time and model fields are read; message text never leaves SQLite.
+            if !sqlite::truth(&message["valid"]) {
+                ctx.diagnostic(
+                    "malformed_record",
+                    Some("opencode"),
+                    Some(&path),
+                    format!("session_message for {} is not valid JSON", s(row, "id")),
+                );
+                continue;
+            }
+            let Ok(tokens) = serde_json::from_str::<Value>(s(&message, "tokens")) else {
+                continue;
+            };
+            if !tokens.is_object() {
+                continue;
+            }
+            let tokens = &tokens;
+            let input = n(tokens, "input");
+            let read = n(&tokens["cache"], "read");
+            let write = n(&tokens["cache"], "write");
+            let reasoning = n(tokens, "reasoning");
+            let output = n(tokens, "output") + reasoning;
+            let ts = parse_ts(&message["created"])
+                .or_else(|| parse_ts(&message["time_created"]))
+                .map(|ts| ts.to_rfc3339_opts(SecondsFormat::AutoSi, true));
+            let model = message["model"]
+                .as_str()
+                .map_or_else(|| row["model"].clone(), |id| json!(id));
+            let call = json!({"id":row["id"],"harness":harness,"ts":ts,"model":model,"input_tokens":input,"cache_read_tokens":read,"cache_write_tokens":write,"output_tokens":output,"reasoning_tokens":reasoning,"total_tokens":input+read+write+output,"tools":[]});
+            for key in keys {
+                out[key] = json!(n(&out, key) + n(&call, key));
+            }
+            call_rows.push(call);
+        }
+        out["calls"] = json!(call_rows.len());
+        return (out, call_rows);
+    }
     if !["claude", "codex"].contains(&harness) {
         out["note"] = json!(if harness == "t3" {
             "provider transcript not found"
         } else {
-            "usage is read for claude and codex sessions only"
+            "usage is read for claude, codex and opencode sessions only"
         });
         return (out, call_rows);
     }

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 pub struct OpenCode;
 impl OpenCode {
-    fn path(ctx: &Context) -> PathBuf {
+    pub(crate) fn path(ctx: &Context) -> PathBuf {
         std::env::var_os("XDG_DATA_HOME")
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)

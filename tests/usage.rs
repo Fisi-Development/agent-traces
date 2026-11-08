@@ -279,7 +279,7 @@ fn absent_usage_is_zero_and_unsupported_harness_is_null() {
     assert_eq!(got[1]["reasoning_tokens"], 0);
     assert_eq!(
         got[2]["note"],
-        "usage is read for claude and codex sessions only"
+        "usage is read for claude, codex and opencode sessions only"
     );
     assert!(got[2]["calls"].is_null());
 }
@@ -450,4 +450,149 @@ fn undated_calls_are_only_dropped_in_windows_and_notes_go_to_stderr() {
         String::from_utf8(out.stderr).unwrap().replace("\r\n", "\n"),
         "thread-missing: provider transcript not found\n"
     );
+}
+
+#[test]
+fn opencode_usage_counts_calls_and_windows_without_message_text() {
+    if std::env::var_os("XDG_DATA_HOME").is_some() {
+        return;
+    }
+    let home = fixture();
+    let path = home.path().join(".local/share/opencode/opencode.db");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let con = Connection::open(path).unwrap();
+    con.execute_batch(r#"PRAGMA journal_mode=WAL;
+        CREATE TABLE session_v2(id TEXT,parent_id TEXT,directory TEXT,title TEXT,model TEXT,agent TEXT,time_created INTEGER,time_updated INTEGER,time_archived INTEGER);
+        CREATE TABLE session_message(id TEXT,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,time_updated INTEGER,data TEXT);
+        INSERT INTO session_v2 VALUES('usage-opencode',NULL,'/fixture','Usage','{"id":"session-model"}','agent',1793707200000,1793707290000,NULL);
+        INSERT INTO session_v2 VALUES('empty-opencode',NULL,'/fixture','Empty',NULL,'agent',1793707200000,1793707290000,NULL);
+    "#).unwrap();
+    let messages = [
+        (
+            "assistant",
+            json!({"tokens":{"input":10,"output":20,"reasoning":5,"cache":{"read":30,"write":40}},"time":{"created":1793707210000_i64},"model":{"id":"call-model"}}),
+        ),
+        (
+            "assistant",
+            json!({"tokens":{"input":2,"output":3,"cache":{"read":4,"write":5}},"model":{"id":"call-model"}}),
+        ),
+        ("compaction", json!({"tokens":{"input":7,"output":11}})),
+        ("user", json!({"text":"SECRET-MARKER"})),
+        ("assistant", json!({"content":[{"text":"SECRET-MARKER"}]})),
+    ];
+    for (seq, (kind, data)) in messages.iter().enumerate() {
+        con.execute(
+            "INSERT INTO session_message VALUES(?1,'usage-opencode',?2,?3,?4,?4,?5)",
+            rusqlite::params![
+                format!("message-{seq}"),
+                kind,
+                seq as i64,
+                1793707210000_i64 + seq as i64 * 10000,
+                data.to_string()
+            ],
+        )
+        .unwrap();
+    }
+    // A malformed row is skipped with a diagnostic and must not fail the query.
+    con.execute(
+        "INSERT INTO session_message VALUES('message-bad','usage-opencode','assistant',99,1793707280000,1793707280000,'{not json')",
+        [],
+    )
+    .unwrap();
+    let out = run(home.path(), &["usage", "usage-opencode", "--json"]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("SECRET-MARKER"));
+    let session = rows(out).remove(0);
+    assert_eq!(session["calls"], 3);
+    for (key, expected) in [
+        ("input_tokens", 19),
+        ("cache_read_tokens", 34),
+        ("cache_write_tokens", 45),
+        ("output_tokens", 39),
+        ("reasoning_tokens", 5),
+        ("total_tokens", 137),
+    ] {
+        assert_eq!(session[key], expected, "{key}");
+    }
+    let out = run(
+        home.path(),
+        &["usage", "usage-opencode", "--calls", "--json"],
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("SECRET-MARKER"));
+    let calls = rows(out);
+    assert_eq!(calls.len(), 3);
+    for (index, call) in calls.iter().enumerate() {
+        assert_eq!(call["id"], "usage-opencode");
+        assert_eq!(call["harness"], "opencode");
+        assert_eq!(call["tools"], json!([]));
+        assert_eq!(
+            call["model"],
+            if index == 2 {
+                "session-model"
+            } else {
+                "call-model"
+            }
+        );
+        let ts = call["ts"].as_str().unwrap();
+        assert!(chrono::DateTime::parse_from_rfc3339(ts).is_ok());
+        assert_eq!(
+            ts,
+            [
+                "2026-11-03T12:00:10Z",
+                "2026-11-03T12:00:20Z",
+                "2026-11-03T12:00:30Z"
+            ][index]
+        );
+    }
+    assert_eq!(calls[0]["output_tokens"], 25);
+    assert_eq!(calls[0]["total_tokens"], 105);
+    let filtered = rows(run(
+        home.path(),
+        &[
+            "usage",
+            "usage-opencode",
+            "--calls",
+            "--since",
+            "2026-11-03T12:00:20Z",
+            "--json",
+        ],
+    ));
+    assert_eq!(filtered, calls[1..]);
+    let window = rows(run(
+        home.path(),
+        &[
+            "usage",
+            "usage-opencode",
+            "--since",
+            "2026-11-03T12:00:20Z",
+            "--until",
+            "2026-11-03T12:00:20Z",
+            "--json",
+        ],
+    ));
+    assert_eq!(window[0]["calls"], 1);
+    assert_eq!(window[0]["total_tokens"], 14);
+    let empty = rows(run(home.path(), &["usage", "empty-opencode", "--json"]));
+    for key in [
+        "calls",
+        "input_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "total_tokens",
+    ] {
+        assert_eq!(empty[0][key], 0);
+    }
+    t3(home.path());
+    let t3_con = Connection::open(home.path().join(".t3/userdata/state.sqlite")).unwrap();
+    t3_con.execute("UPDATE provider_session_runtime SET provider_name='opencode',provider_instance_id='opencode',resume_cursor_json='{\"sessionId\":\"usage-opencode\"}' WHERE thread_id='thread-usage'", []).unwrap();
+    let provider = rows(run(home.path(), &["usage", "thread-usage", "--json"]));
+    assert_eq!(provider[0]["harness"], "opencode");
+    assert_eq!(provider[0]["t3_thread"], "thread-usage");
+    assert_eq!(provider[0]["total_tokens"], 137);
+    con.execute("DROP TABLE session_message", []).unwrap();
+    let unreadable = rows(run(home.path(), &["usage", "usage-opencode", "--json"]));
+    assert_eq!(unreadable[0]["note"], "store unreadable");
+    assert!(unreadable[0]["calls"].is_null());
+    assert!(unreadable[0]["total_tokens"].is_null());
 }

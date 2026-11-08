@@ -152,7 +152,7 @@ on missing required schema. Omit `--json` for pretty JSON.
 | `failures` | Rank errors and user corrections |
 | `prompts` | Export user-typed turns as redacted JSON Lines |
 | `show ID` | Render a transcript or selected turns |
-| `usage ID... [--json]` | Per-session token usage, API calls and wall time for Claude and Codex, including T3 provider transcripts |
+| `usage ID... [--json]` | Per-session token usage, API calls and wall time for Claude, Codex and OpenCode, including T3 provider transcripts |
 | `resolve ID` | Resolve full IDs and prefixes |
 | `tree ID` | List recorded child sessions |
 | `handoff ID` | Extract a handoff draft |
