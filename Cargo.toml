@@ -24,6 +24,7 @@ ruzstd = "0.9"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Time"] }
 
 [dev-dependencies]
+proptest = "1"
 tempfile = "3"
 
 # Build speed over binary size (Royal, 2026-10-18; docs/perf/build-test-speed-2026-10.md):

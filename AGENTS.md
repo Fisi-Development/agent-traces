@@ -6,6 +6,10 @@ agent-traces is a native CLI that reads coding-agent session stores. Build, test
 
 agent-traces is developed in the Harbor monorepo (`royalaid/harbor`, folder `agent-traces/`, Harbor decisions D042 and D043). `royalaid/agent-traces` is a one-way published mirror of that folder: releases and Actions run there, and nobody commits or opens pull requests there. Run `cargo` from `agent-traces/`, which keeps its own Cargo package; Harbor has no root Cargo workspace. Files under `.github/workflows/` here are inert in Harbor and run in the mirror. Everything in this folder is published to the public mirror, so keep private paths, hosts, identifiers and secrets out of it.
 
+## Formal verification
+
+A change to commit evidence in `src/evidence.rs` (SHA tokens, matching, disambiguation, resolution) runs the `verify-commit-evidence` skill (`.claude/skills/verify-commit-evidence/`, `scripts/check.sh`): proptest properties in `tests/commit_evidence_properties.rs`, run through the real CLI, that a commit is resolved only from a SHA prefix token of the documented length, never from a hex run inside a longer identifier, and never from an ambiguous prefix. They are `#[ignore]`d so plain `cargo test` stays green; `check.sh` runs them with `--include-ignored`.
+
 ## Rollout
 
 Follow Harbor's root Rollout (`../AGENTS.md`) for merge, pull and install: after the PC's Harbor checkout reaches a merge that changes `agent-traces/`, own-tools-sync runs `python tools/mirror_component.py sync agent-traces`, which pushes one commit `Sync from royalaid/harbor@<short sha>` to the mirror (Harbor `docs/runbooks/component-mirrors.md`). A sync whose `Cargo.toml` version has no `vX.Y.Z` tag on the mirror is released by `.github/workflows/release.yml` in the mirror and installed on every rollout host (`python tools/rollout_state.py hosts`) by own-tools-sync within about 30 minutes. A merge that keeps the version releases nothing. The steps below are agent-traces' own, for every merge that changes the binary. A step that does not apply to the change is skipped, and the receipt says why. Each step is done when its check passes.

@@ -1,0 +1,14 @@
+{
+  "files": {
+    "src/evidence.rs": "7550545dd5031bb2cd4fbc8cd3789ee4fbc9b230327f96e8ee19334e9275d8a1",
+    "docs/commit-evidence.md": "28452db13fdd17ceb73ab3edb1b38457bc836984852b99b35b210fb698c03819",
+    "tests/commit_evidence_properties.rs": "42b86453a0e819a6f6e0be12470c0d9bd04903ce00fd838468be61179e7cc3a9",
+    "Cargo.toml": "d8699ab0249bcab8e5caa049b88554a9d473881576e968a0cb774988f010bb77",
+    "Cargo.lock": "d8496b275f52b6dffd5f9f7288858e2fc22ba1c29f4f3061e3f2272581eb56eb"
+  },
+  "mutations": {
+    "bdb0aa4524abf98cdce98c74e055a674744308811db9f40fa56c6920e27187b5": "HexSubstring",
+    "9e8a91627ffc06fe6840a9778400725badfec397bc7db1c05e3d224a166f6a7d": "ShortToken",
+    "c707befc0a61bf5c38bf61dd4bef4aa79c8fff8857799bda206d37dcb5ce46a8": "ResolveAmbiguous"
+  }
+}
