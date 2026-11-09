@@ -205,6 +205,8 @@ The launch fields also work with `--fields` and `ls --count-by`.
 and `parent` keys, each null when absent. Session rows include `duplicates_dropped`:
 repeated calls across the requested ids are counted only in the first session,
 including when a T3 thread and its provider id name the same transcript.
+`--keep-duplicates` (from 0.2.39) skips that cross-id step and leaves `duplicates_dropped`
+at 0, for callers that batch ids and drop repeated `(harness, dedupe_key)` pairs themselves.
 
 `usage ID... --calls` emits one row per call. After `tools`, call rows include
 `dedupe_key`, `speed` (`standard`, `fast`, or `ultrafast`) and `reported_cost_usd`
