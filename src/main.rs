@@ -236,6 +236,9 @@ enum Command {
         since: Option<String>,
         #[arg(long)]
         until: Option<String>,
+        /// Keep calls whose dedupe_key repeats across the ids (for callers that dedupe across batches)
+        #[arg(long)]
+        keep_duplicates: bool,
         #[command(flatten)]
         format: Format,
     },
@@ -945,6 +948,7 @@ fn execute_with_writers(
             calls,
             since,
             until,
+            keep_duplicates,
             format,
         } => {
             let since = since
@@ -966,9 +970,10 @@ fn execute_with_writers(
                 agent_traces::usage::window(&mut session, &mut call_rows, since, until);
                 let before = call_rows.len();
                 call_rows.retain(|call| {
-                    call["dedupe_key"].as_str().is_none_or(|key| {
-                        seen.insert((s(call, "harness").to_owned(), key.to_owned()))
-                    })
+                    *keep_duplicates
+                        || call["dedupe_key"].as_str().is_none_or(|key| {
+                            seen.insert((s(call, "harness").to_owned(), key.to_owned()))
+                        })
                 });
                 session["duplicates_dropped"] = json!(before - call_rows.len());
                 agent_traces::usage::sum_calls(&mut session, &call_rows);

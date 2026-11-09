@@ -646,6 +646,19 @@ fn claude_cross_file_first_wins_in_argument_order_and_windows() {
     }
     let reverse = rows(run(home.path(), &["usage", b, a, "--calls", "--json"]));
     assert_eq!(reverse[0]["output_tokens"], 99);
+    // --keep-duplicates leaves cross-id dedupe to a caller that batches (front-door spend.py).
+    let kept = rows(run(
+        home.path(),
+        &["usage", a, b, "--json", "--keep-duplicates"],
+    ));
+    assert_eq!(kept[1]["output_tokens"], 99);
+    assert_eq!(kept[1]["duplicates_dropped"], 0);
+    let kept_calls = rows(run(
+        home.path(),
+        &["usage", a, b, "--calls", "--json", "--keep-duplicates"],
+    ));
+    assert_eq!(kept_calls.len(), 2);
+    assert_eq!(kept_calls[1]["dedupe_key"], "shared:request");
 }
 #[test]
 fn claude_first_wins_request_only_null_keys_and_tool_names() {
