@@ -202,7 +202,17 @@ Missing values are null; percent-encoded values are decoded.
 with exact matching before `--limit`; `--surface none` selects unstamped sessions.
 The launch fields also work with `--fields` and `ls --count-by`.
 `usage --json` includes a `launch` object with `surface`, `subject`, `launcher`,
-and `parent` keys, each null when absent. Usage text output is unchanged.
+and `parent` keys, each null when absent. Session rows include `duplicates_dropped`:
+repeated calls across the requested ids are counted only in the first session,
+including when a T3 thread and its provider id name the same transcript.
+
+`usage ID... --calls` emits one row per call. After `tools`, call rows include
+`dedupe_key`, `speed` (`standard`, `fast`, or `ultrafast`) and `reported_cost_usd`
+(null when unreported). Claude keeps the first usage for each message/request
+pair and emits advisor calls separately. Codex validates request usage against
+cumulative counters and suppresses copied fork history. Session totals sum the
+kept calls. `--since` and `--until` filter calls before cross-session deduplication.
+OpenCode calls have a null key and cost, and standard speed.
 
 `find` prints each session's header and up to `--hits` matching lines
 (default 3) of `--width` characters (default 220). `--ids` prints only one

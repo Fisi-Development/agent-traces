@@ -961,8 +961,17 @@ fn execute_with_writers(
                 .collect::<Result<Vec<_>>>()?;
             let mut rows = Vec::new();
             let mut stderr = String::new();
+            let mut seen = std::collections::HashSet::new();
             for (mut session, mut call_rows) in sessions {
                 agent_traces::usage::window(&mut session, &mut call_rows, since, until);
+                let before = call_rows.len();
+                call_rows.retain(|call| {
+                    call["dedupe_key"].as_str().is_none_or(|key| {
+                        seen.insert((s(call, "harness").to_owned(), key.to_owned()))
+                    })
+                });
+                session["duplicates_dropped"] = json!(before - call_rows.len());
+                agent_traces::usage::sum_calls(&mut session, &call_rows);
                 if *calls {
                     if let Some(note) = session["note"].as_str() {
                         stderr.push_str(&format!("{}: {note}\n", s(&session, "id")));
