@@ -64,9 +64,10 @@ and parsing, 0.290s to SQLite calls, and only 2.6ms to BM25 scoring within a 15.
 profile. Default listing, resolve and live were dominated by directory discovery.
 Interpreter-only startup was 23ms; CLI help including imports/parser was 96ms.
 Cumulative profile figures are nested and cannot be summed. The full baseline
-and 48 timing runs remain in the skills repository's
-`docs/research/2026-09-26-agent-traces-performance.md` and
-`docs/agent-traces/performance-data.json`.
+and 48 timing runs are in Chartroom evidence
+`5e353d7246a074e5bcee6805aefb3b7693c123e821f35191fbd164cecbcd180c`
+(`chartroom evidence get <hash>`; formerly the skills repository's
+`docs/agent-traces/performance-data.json`).
 
 V1 initially required 10.74s for a full inventory. Isolated profiling on 2034 frozen
 rows measured 452ms for identity projection and 2773ms for full session projection;

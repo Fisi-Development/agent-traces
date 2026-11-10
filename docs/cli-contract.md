@@ -1,7 +1,8 @@
 # Agent-traces CLI v1 contract
 
-Implemented by the Rust CLI. The frozen Python reference supplies legacy
-behavior and does not implement v1.
+Implemented by the Rust CLI, the only engine. The Python implementation it
+was ported from was removed in November 2026; the legacy (unversioned) output
+it defined is pinned by stored goldens (see [parity.md](parity.md)).
 
 Read [cli-v1.schema.json](../schemas/cli-v1.schema.json) for exact fields and
 [cli-v1.examples.json](../schemas/cli-v1.examples.json) for synthetic envelopes covering
@@ -214,7 +215,7 @@ order. Canonical JSON object key order is not a contract.
 
 Negative limits are invalid in v1. Limit zero is valid and returns no rows
 with total and truncated still describing the full query. Other option
-defaults remain the Python reference defaults. Limits select output rows,
+defaults remain the legacy defaults. Limits select output rows,
 not a promise to stop scanning early.
 
 ## Privacy and trust
@@ -243,20 +244,16 @@ redaction, or null rules require a reviewed version revision and fixtures.
 For v1.0, adding a field requires updating the schema and negotiating a new
 minor version rather than silently emitting it to pinned consumers.
 
-Implement v1 in Rust alongside legacy compatibility. Keep Python as the
-reference for existing behavior; do not require a production Python v1
-implementation as a prerequisite. A test-only projector over reference
-rows/events supports comparisons of inherited semantics, while independent
-fixtures check newly specified v1 behavior. Compare v1 semantic outputs after
-only documented nondeterminism normalization:
-observed_at and configured host/root mappings for frozen fixtures. Do not
-normalize away ordering, missing fields, ambiguity, coverage failures,
-redaction, or score differences. A parser accepting the output is not
-sufficient evidence of compatibility.
+V1 and the legacy output are both implemented in Rust. Stored goldens pin the
+legacy output and independent fixtures check v1 (see [parity.md](parity.md)).
+Compare outputs after only the documented normalization. Do not normalize away
+ordering, missing fields, ambiguity, coverage failures, redaction, or score
+differences. A parser accepting the output is not sufficient evidence of
+compatibility.
 
 ## Legacy inventory and known differences
 
-Audit basis: scripts/agent_traces.py on the planning branch before any port.
+Audit basis: the Python `scripts/agent_traces.py` on the planning branch before any port (since removed; the source lines below refer to it).
 
 | Area | Current behavior | Source lines |
 | --- | --- | --- |
@@ -286,7 +283,6 @@ Immediately after `# Handoff draft`, handoff writes one unfenced line:
 It names the source session. Consumers must treat this as an observed claim,
 not verified identity, and ignore markers inside fenced code blocks. Transcript
 extracts remain quoted, with a delivered UTF-8 byte cap of 49,152 bytes.
-The skill's Python fallback uses the same quoting and clipping order as Rust.
 Malformed marker identities fail without writing a brief. Fields use bounded
 ASCII tokens: harness `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`, session
 `[A-Za-z0-9][A-Za-z0-9._:-]{0,255}`, and host
@@ -297,8 +293,7 @@ For a Claude subagent or workflow agent, `session` is
 The adapter obtains the parent from the transcript directory immediately above
 `subagents`; the child comes from the `agent-<child id>.jsonl` filename. The
 256-character session bound applies to the assembled id (a 36-character parent
-and an 8-character child use 51 characters). Rust and the skill's Python fallback
-use this same form. Lore resolves exact source ids first, and accepts a legacy
+and an 8-character child use 51 characters). Lore resolves exact source ids first, and accepts a legacy
 child-only suffix only when exactly one stored session matches. Missing or
 ambiguous sources keep the receiver's claimed id in `linked_from` with
 `unresolved: true`, and attach no `linked_to` to any candidate.
