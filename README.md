@@ -6,10 +6,10 @@ Read coding-agent sessions across Claude Code, Codex, T3 Code, OpenCode, and
 Grok Build with one native executable. SQLite is bundled. Running the executable
 does not require Python, ripgrep, Cargo, or a separately installed SQLite.
 
-All eleven commands are implemented. Windows unit, schema, and Python parity
+All eleven commands are implemented. Windows unit, schema, and golden parity
 checks pass; the Linux musl executable cross-builds. Follow the native Windows,
 macOS ARM64/x64, and Linux [CI results](https://github.com/royalaid/agent-traces/actions/workflows/ci.yml).
-Python remains the regression oracle. See
+Stored golden outputs define the regression expectations. See
 [verification and measurements](docs/verification-2026-09-26.md).
 Download native binaries from the [latest release](https://github.com/royalaid/agent-traces/releases/latest).
 This package is not published to crates.io.
@@ -253,7 +253,7 @@ cargo build --locked
 python tests/parity.py
 ```
 
-Python is a development-only reference test dependency. Optional schema checks
+Python is a development-only fixture and golden test dependency. Optional schema checks
 use `python -m pip install jsonschema==4.26.0`, then
 `python tests/parity.py --schema`. See [parity scope](docs/parity.md).
 

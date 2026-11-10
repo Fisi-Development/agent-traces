@@ -1,0 +1,1174 @@
+[
+  {
+    "args": [
+      "where"
+    ],
+    "exit": 0,
+    "expected": "Stores on this machine (newest = latest activity, local time):\n\nclaude   LIVE  ~/.claude                                    sessions=1     newest=2026-09-25 10:00\n         index: projects/<cwd-slug>/<session>.jsonl (no index; scan files)\n         notes: history.jsonl is a typed-prompt log only (misses SDK/T3/subagent prompts)\ncodex    LIVE  ~/.codex                                     sessions=1     newest=2026-09-25 10:00\n         index: state_5.sqlite threads (sessions/ + archived_sessions/ rollouts)\nt3       LIVE  ~/.t3/userdata/state.sqlite                  sessions=2     newest=2026-09-25 10:00\n         index: projection_threads + provider_session_runtime.resume_cursor_json\n         notes: provider instances: \nopencode LIVE  ~/.local/share/opencode/opencode.db          sessions=1     newest=2026-09-25 10:00\n         index: session_v2 + session_message (not the storage/ json tree, not v1 tables)\ngrok     LIVE  ~/.grok/sessions                             sessions=1     newest=2026-09-25 10:00\n         index: sessions/<urlencoded cwd>/<id>/summary.json + chat_history.jsonl\n         notes: session_search.sqlite is stale; subagents run inline (spawn_subagent tool calls)\n\nNot adapted (read by hand if needed):\n  cursor       ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb  (cursorDiskKV composerData:*/bubbleId:*; no adapter)\n  cursor-agent ~/.cursor/projects/*/agent-transcripts  (jsonl; no adapter)\n  gemini       ~/.gemini/tmp/*/chats  (session-*.json; no adapter)\n  hermes       ~/.hermes/state.db  (sessions + messages tables; few local rows; ignore ~/.hermes/sessions and hermes-agent/)\n  context-mode ~/.claude*/context-mode/sessions, ~/.codex/context-mode/sessions  (sidecar index of prompts/decisions, not transcripts; session ids match the harness)\n",
+    "id": "where",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "ls",
+      "--all",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "grok",
+        "home": "~/.grok",
+        "id": "grok-fixture-555555",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "originator": null,
+        "parent": null,
+        "path": "<HOME>/.grok/sessions/fixture/grok-fixture-555555/chat_history.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Grok mailbox",
+        "updated": "2026-09-25T10:00:03+00:00"
+      },
+      {
+        "archived": false,
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "opencode",
+        "home": "~/.local/share/opencode",
+        "id": "ses_fixture444444",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "~/.local/share/opencode/opencode.db#session=ses_fixture444444",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "OpenCode mailbox",
+        "updated": "2026-09-25T10:00:02.172000+00:00"
+      },
+      {
+        "archived": false,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "codex",
+        "home": "~/.codex",
+        "id": "bbbbbbbb-2222-4222-8222-222222222222",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "nickname": null,
+        "originator": "cli",
+        "parent": null,
+        "path": "<HOME>/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl",
+        "provider_instance": "codex",
+        "started": "2026-09-25T10:00:00+00:00",
+        "t3_thread": "thread-second-fixture",
+        "t3_title": "Home session",
+        "title": "Codex mailbox",
+        "updated": "2026-09-25T10:00:01+00:00"
+      },
+      {
+        "agent_type": null,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "entrypoint": null,
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "claude",
+        "home": "~/.claude",
+        "id": "aaaaaaaa-1111-4111-8111-111111111111",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "<HOME>/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Mailbox routing",
+        "updated": "2026-09-25T10:00:00+00:00"
+      }
+    ],
+    "id": "ls --all --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "ls",
+      "--all",
+      "--subagents",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "grok",
+        "home": "~/.grok",
+        "id": "grok-fixture-555555",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "originator": null,
+        "parent": null,
+        "path": "<HOME>/.grok/sessions/fixture/grok-fixture-555555/chat_history.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Grok mailbox",
+        "updated": "2026-09-25T10:00:03+00:00"
+      },
+      {
+        "archived": false,
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "opencode",
+        "home": "~/.local/share/opencode",
+        "id": "ses_fixture444444",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "~/.local/share/opencode/opencode.db#session=ses_fixture444444",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "OpenCode mailbox",
+        "updated": "2026-09-25T10:00:02.172000+00:00"
+      },
+      {
+        "archived": false,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "codex",
+        "home": "~/.codex",
+        "id": "bbbbbbbb-2222-4222-8222-222222222222",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "nickname": null,
+        "originator": "cli",
+        "parent": null,
+        "path": "<HOME>/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl",
+        "provider_instance": "codex",
+        "started": "2026-09-25T10:00:00+00:00",
+        "t3_thread": "thread-second-fixture",
+        "t3_title": "Home session",
+        "title": "Codex mailbox",
+        "updated": "2026-09-25T10:00:01+00:00"
+      },
+      {
+        "agent_type": null,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "entrypoint": null,
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "claude",
+        "home": "~/.claude",
+        "id": "aaaaaaaa-1111-4111-8111-111111111111",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "<HOME>/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Mailbox routing",
+        "updated": "2026-09-25T10:00:00+00:00"
+      }
+    ],
+    "id": "ls --all --subagents --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "find",
+      "mailbox",
+      "--json",
+      "--include-self"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "_score": 3.24,
+        "agent_type": null,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "entrypoint": null,
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "claude",
+        "hits": [
+          {
+            "role": "prompt",
+            "snippet": "Repair mailbox routing for café FIX-42",
+            "ts": "2026-09-25T10:00:00+00:00"
+          },
+          {
+            "role": "prompt",
+            "snippet": "Still broken, fix mailbox routing",
+            "ts": "2026-09-25T10:00:00+00:00"
+          }
+        ],
+        "home": "~/.claude",
+        "id": "aaaaaaaa-1111-4111-8111-111111111111",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "<HOME>/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Mailbox routing",
+        "updated": "2026-09-25T10:00:00+00:00"
+      },
+      {
+        "_score": 2.86,
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "grok",
+        "hits": [
+          {
+            "role": "prompt",
+            "snippet": "Repair mailbox routing for café FIX-42",
+            "ts": "2026-09-25T10:00:00+00:00"
+          }
+        ],
+        "home": "~/.grok",
+        "id": "grok-fixture-555555",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "originator": null,
+        "parent": null,
+        "path": "<HOME>/.grok/sessions/fixture/grok-fixture-555555/chat_history.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Grok mailbox",
+        "updated": "2026-09-25T10:00:03+00:00"
+      },
+      {
+        "_score": 2.86,
+        "archived": false,
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "opencode",
+        "hits": [
+          {
+            "role": "prompt",
+            "snippet": "Repair mailbox routing for café FIX-42",
+            "ts": "2026-09-25T10:00:00+00:00"
+          }
+        ],
+        "home": "~/.local/share/opencode",
+        "id": "ses_fixture444444",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "~/.local/share/opencode/opencode.db#session=ses_fixture444444",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "OpenCode mailbox",
+        "updated": "2026-09-25T10:00:02.172000+00:00"
+      },
+      {
+        "_score": 1.41,
+        "archived": false,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "codex",
+        "hits": [
+          {
+            "role": "prompt",
+            "snippet": "Repair mailbox routing for café FIX-42",
+            "ts": "2026-09-25T10:00:00+00:00"
+          }
+        ],
+        "home": "~/.codex",
+        "id": "bbbbbbbb-2222-4222-8222-222222222222",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "nickname": null,
+        "originator": "cli",
+        "parent": null,
+        "path": "<HOME>/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl",
+        "provider_instance": "codex",
+        "started": "2026-09-25T10:00:00+00:00",
+        "t3_thread": "thread-second-fixture",
+        "t3_title": "Home session",
+        "title": "Codex mailbox",
+        "updated": "2026-09-25T10:00:01+00:00"
+      }
+    ],
+    "id": "find mailbox --json --include-self",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "find",
+      "mailbox",
+      "routing",
+      "--json",
+      "--include-self",
+      "--sort",
+      "oldest"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "_score": 5.94,
+        "agent_type": null,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "entrypoint": null,
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "claude",
+        "hits": [
+          {
+            "role": "prompt",
+            "snippet": "Repair mailbox routing for café FIX-42",
+            "ts": "2026-09-25T10:00:00+00:00"
+          },
+          {
+            "role": "prompt",
+            "snippet": "Still broken, fix mailbox routing",
+            "ts": "2026-09-25T10:00:00+00:00"
+          }
+        ],
+        "home": "~/.claude",
+        "id": "aaaaaaaa-1111-4111-8111-111111111111",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "<HOME>/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Mailbox routing",
+        "updated": "2026-09-25T10:00:00+00:00"
+      },
+      {
+        "_score": 2.47,
+        "archived": false,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "codex",
+        "hits": [
+          {
+            "role": "prompt",
+            "snippet": "Repair mailbox routing for café FIX-42",
+            "ts": "2026-09-25T10:00:00+00:00"
+          }
+        ],
+        "home": "~/.codex",
+        "id": "bbbbbbbb-2222-4222-8222-222222222222",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "nickname": null,
+        "originator": "cli",
+        "parent": null,
+        "path": "<HOME>/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl",
+        "provider_instance": "codex",
+        "started": "2026-09-25T10:00:00+00:00",
+        "t3_thread": "thread-second-fixture",
+        "t3_title": "Home session",
+        "title": "Codex mailbox",
+        "updated": "2026-09-25T10:00:01+00:00"
+      },
+      {
+        "_score": 3.75,
+        "archived": false,
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "opencode",
+        "hits": [
+          {
+            "role": "prompt",
+            "snippet": "Repair mailbox routing for café FIX-42",
+            "ts": "2026-09-25T10:00:00+00:00"
+          }
+        ],
+        "home": "~/.local/share/opencode",
+        "id": "ses_fixture444444",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "~/.local/share/opencode/opencode.db#session=ses_fixture444444",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "OpenCode mailbox",
+        "updated": "2026-09-25T10:00:02.172000+00:00"
+      },
+      {
+        "_score": 3.75,
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "grok",
+        "hits": [
+          {
+            "role": "prompt",
+            "snippet": "Repair mailbox routing for café FIX-42",
+            "ts": "2026-09-25T10:00:00+00:00"
+          }
+        ],
+        "home": "~/.grok",
+        "id": "grok-fixture-555555",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "originator": null,
+        "parent": null,
+        "path": "<HOME>/.grok/sessions/fixture/grok-fixture-555555/chat_history.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Grok mailbox",
+        "updated": "2026-09-25T10:00:03+00:00"
+      }
+    ],
+    "id": "find mailbox routing --json --include-self --sort oldest",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "find",
+      "absent-needle-xyz",
+      "--json"
+    ],
+    "exit": 1,
+    "expected": [],
+    "id": "find absent-needle-xyz --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "live"
+    ],
+    "exit": 0,
+    "expected": "t3                         thread-second-fixture  -> codex:bbbbbbbb-2222-4222-8222-222222222222\n    ~  Home session\nt3                         thread-fixture-333333  -> codex:bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  T3 mailbox\n\n0 live Claude Code sessions, 0 besides this one. T3 rows above repeat Claude or Codex sessions under their T3 thread ids.\n",
+    "id": "live",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "me"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing  [THIS SESSION]\n    path: ~/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl\n",
+    "id": "me",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "touched",
+      "router.py",
+      "--since",
+      "2026-09-01"
+    ],
+    "exit": 0,
+    "expected": "file: ~/project/router.py (not on disk now)\n2026-09-25 10:00  write   claude   aaaaaaaa-1111-4111-8111-111111111111  Mailbox routing\n    file_path=<HOME>/project/router.py\n\nfirst write-like call: claude aaaaaaaa-1111-4111-8111-111111111111 2026-09-25 10:00 (write)\nlast write-like call:  claude aaaaaaaa-1111-4111-8111-111111111111 2026-09-25 10:00 (write)\n",
+    "id": "touched router.py --since 2026-09-01",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "failures",
+      "--min",
+      "1",
+      "--since",
+      "2026-09-01"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing\n      score 1: 1 tool errors, 0 api/abort/runtime errors, 0 user corrections, 0 compactions, 2 prompts\n      09-25 10:00 tool error permission denied\n",
+    "id": "failures --min 1 --since 2026-09-01",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "find",
+      "mailbox",
+      "--include-self",
+      "--hits",
+      "-1"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing  <score 3.2, match in title>\n      09-25 10:00 prompt    Repair mailbox routing for café FIX-42\n      (+3 more hits)\n2026-09-25 10:00  grok     ~/.grok            grok-fixture-555555\n    ~/project  Grok mailbox  <score 2.9, match in title>\n      (+2 more hits)\n2026-09-25 10:00  opencode ~/.local/share/opencode ses_fixture444444\n    ~/project  OpenCode mailbox  <score 2.9, match in title>\n      (+2 more hits)\n2026-09-25 10:00  codex    ~/.codex           bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  Home session  [t3=thread-second-fixture]  <score 1.4, match in first prompt>\n      (+2 more hits)\n",
+    "id": "find mailbox --include-self --hits -1",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "find",
+      "mailbox",
+      "--include-self",
+      "--hits",
+      "-100"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing  <score 3.2, match in title>\n      (+102 more hits)\n2026-09-25 10:00  grok     ~/.grok            grok-fixture-555555\n    ~/project  Grok mailbox  <score 2.9, match in title>\n      (+101 more hits)\n2026-09-25 10:00  opencode ~/.local/share/opencode ses_fixture444444\n    ~/project  OpenCode mailbox  <score 2.9, match in title>\n      (+101 more hits)\n2026-09-25 10:00  codex    ~/.codex           bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  Home session  [t3=thread-second-fixture]  <score 1.4, match in first prompt>\n      (+101 more hits)\n",
+    "id": "find mailbox --include-self --hits -100",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "touched",
+      "router.py",
+      "--since",
+      "2026-09-01",
+      "--limit",
+      "-1"
+    ],
+    "exit": 0,
+    "expected": "file: ~/project/router.py (not on disk now)\n\nfirst write-like call: claude aaaaaaaa-1111-4111-8111-111111111111 2026-09-25 10:00 (write)\nlast write-like call:  claude aaaaaaaa-1111-4111-8111-111111111111 2026-09-25 10:00 (write)\n",
+    "id": "touched router.py --since 2026-09-01 --limit -1",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "touched",
+      "router.py",
+      "--since",
+      "2026-09-01",
+      "--limit",
+      "-100"
+    ],
+    "exit": 0,
+    "expected": "file: ~/project/router.py (not on disk now)\n\nfirst write-like call: claude aaaaaaaa-1111-4111-8111-111111111111 2026-09-25 10:00 (write)\nlast write-like call:  claude aaaaaaaa-1111-4111-8111-111111111111 2026-09-25 10:00 (write)\n",
+    "id": "touched router.py --since 2026-09-01 --limit -100",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "failures",
+      "--min",
+      "-1",
+      "--since",
+      "2026-09-01",
+      "--limit",
+      "-1",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "agent_type": null,
+        "branch": "fixture",
+        "compactions": 0,
+        "corrections": 0,
+        "cwd": "<HOME>/project",
+        "entrypoint": null,
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "claude",
+        "home": "~/.claude",
+        "id": "aaaaaaaa-1111-4111-8111-111111111111",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "<HOME>/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl",
+        "prompts": 2,
+        "samples": [
+          "permission denied"
+        ],
+        "score": 1,
+        "started": "2026-09-25T10:00:00+00:00",
+        "system_errors": 0,
+        "title": "Mailbox routing",
+        "tool_errors": 1,
+        "updated": "2026-09-25T10:00:00+00:00"
+      },
+      {
+        "archived": false,
+        "branch": "fixture",
+        "compactions": 0,
+        "corrections": 0,
+        "cwd": "<HOME>/project",
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "codex",
+        "home": "~/.codex",
+        "id": "bbbbbbbb-2222-4222-8222-222222222222",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "nickname": null,
+        "originator": "cli",
+        "parent": null,
+        "path": "<HOME>/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl",
+        "prompts": 1,
+        "provider_instance": "codex",
+        "samples": [],
+        "score": 0,
+        "started": "2026-09-25T10:00:00+00:00",
+        "system_errors": 0,
+        "t3_thread": "thread-second-fixture",
+        "t3_title": "Home session",
+        "title": "Codex mailbox",
+        "tool_errors": 0,
+        "updated": "2026-09-25T10:00:01+00:00"
+      },
+      {
+        "archived": false,
+        "branch": null,
+        "compactions": 0,
+        "corrections": 0,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "opencode",
+        "home": "~/.local/share/opencode",
+        "id": "ses_fixture444444",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "~/.local/share/opencode/opencode.db#session=ses_fixture444444",
+        "prompts": 1,
+        "samples": [],
+        "score": 0,
+        "started": "2026-09-25T10:00:00+00:00",
+        "system_errors": 0,
+        "title": "OpenCode mailbox",
+        "tool_errors": 0,
+        "updated": "2026-09-25T10:00:02.172000+00:00"
+      }
+    ],
+    "id": "failures --min -1 --since 2026-09-01 --limit -1 --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "failures",
+      "--min",
+      "-1",
+      "--since",
+      "2026-09-01",
+      "--limit",
+      "-100"
+    ],
+    "exit": 0,
+    "expected": "",
+    "id": "failures --min -1 --since 2026-09-01 --limit -100",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "failures",
+      "--min",
+      "-1",
+      "--since",
+      "2026-09-01",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "agent_type": null,
+        "branch": "fixture",
+        "compactions": 0,
+        "corrections": 0,
+        "cwd": "<HOME>/project",
+        "entrypoint": null,
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "claude",
+        "home": "~/.claude",
+        "id": "aaaaaaaa-1111-4111-8111-111111111111",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "<HOME>/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl",
+        "prompts": 2,
+        "samples": [
+          "permission denied"
+        ],
+        "score": 1,
+        "started": "2026-09-25T10:00:00+00:00",
+        "system_errors": 0,
+        "title": "Mailbox routing",
+        "tool_errors": 1,
+        "updated": "2026-09-25T10:00:00+00:00"
+      },
+      {
+        "archived": false,
+        "branch": "fixture",
+        "compactions": 0,
+        "corrections": 0,
+        "cwd": "<HOME>/project",
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "codex",
+        "home": "~/.codex",
+        "id": "bbbbbbbb-2222-4222-8222-222222222222",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "nickname": null,
+        "originator": "cli",
+        "parent": null,
+        "path": "<HOME>/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl",
+        "prompts": 1,
+        "provider_instance": "codex",
+        "samples": [],
+        "score": 0,
+        "started": "2026-09-25T10:00:00+00:00",
+        "system_errors": 0,
+        "t3_thread": "thread-second-fixture",
+        "t3_title": "Home session",
+        "title": "Codex mailbox",
+        "tool_errors": 0,
+        "updated": "2026-09-25T10:00:01+00:00"
+      },
+      {
+        "archived": false,
+        "branch": null,
+        "compactions": 0,
+        "corrections": 0,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "opencode",
+        "home": "~/.local/share/opencode",
+        "id": "ses_fixture444444",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "~/.local/share/opencode/opencode.db#session=ses_fixture444444",
+        "prompts": 1,
+        "samples": [],
+        "score": 0,
+        "started": "2026-09-25T10:00:00+00:00",
+        "system_errors": 0,
+        "title": "OpenCode mailbox",
+        "tool_errors": 0,
+        "updated": "2026-09-25T10:00:02.172000+00:00"
+      },
+      {
+        "branch": null,
+        "compactions": 0,
+        "corrections": 0,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "grok",
+        "home": "~/.grok",
+        "id": "grok-fixture-555555",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "originator": null,
+        "parent": null,
+        "path": "<HOME>/.grok/sessions/fixture/grok-fixture-555555/chat_history.jsonl",
+        "prompts": 1,
+        "samples": [],
+        "score": 0,
+        "started": "2026-09-25T10:00:00+00:00",
+        "system_errors": 0,
+        "title": "Grok mailbox",
+        "tool_errors": 0,
+        "updated": "2026-09-25T10:00:03+00:00"
+      }
+    ],
+    "id": "failures --min -1 --since 2026-09-01 --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "show",
+      "aaaaaaaa-1111-4111-8111-111111111111",
+      "--tail",
+      "-1",
+      "--full-stdout"
+    ],
+    "exit": 0,
+    "expected": "# claude session aaaaaaaa-1111-4111-8111-111111111111\n- title: Mailbox routing\n- home: ~/.claude\n- path: ~/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl\n- cwd: ~/project\n- branch: fixture\n- model: fixture-model\n- time: 2026-09-25 10:00 -> 2026-09-25 10:00 (local UTC)\n- turns: 2 (showing none)\n",
+    "id": "show aaaaaaaa-1111-4111-8111-111111111111 --tail -1 --full-stdout",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "show",
+      "aaaaaaaa-1111-4111-8111-111111111111",
+      "--tail",
+      "-1",
+      "--grep",
+      "mailbox",
+      "--full-stdout"
+    ],
+    "exit": 0,
+    "expected": "# claude session aaaaaaaa-1111-4111-8111-111111111111\n- title: Mailbox routing\n- home: ~/.claude\n- path: ~/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl\n- cwd: ~/project\n- branch: fixture\n- model: fixture-model\n- time: 2026-09-25 10:00 -> 2026-09-25 10:00 (local UTC)\n- turns: 2 (showing 1-2)\n\n---- turn 1/2 ----\n\n## 10:00 USER\nRepair mailbox routing for café FIX-42\n\n10:00 ASSISTANT:\nI will repair mailbox routing.\n10:00   tool Write: file_path=<HOME>/project/router.py\n10:00   ! tool error: permission denied\n\n---- turn 2/2 ----\n\n## 10:00 USER\nStill broken, fix mailbox routing\n",
+    "id": "show aaaaaaaa-1111-4111-8111-111111111111 --tail -1 --grep mailbox --full-stdout",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "resolve",
+      "aaaaaaaa-1111-4111-8111-111111111111",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "agent_type": null,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "entrypoint": null,
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "claude",
+        "home": "~/.claude",
+        "id": "aaaaaaaa-1111-4111-8111-111111111111",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "<HOME>/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Mailbox routing",
+        "updated": "2026-09-25T10:00:00+00:00"
+      }
+    ],
+    "id": "resolve aaaaaaaa-1111-4111-8111-111111111111 --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "show",
+      "aaaaaaaa-1111-4111-8111-111111111111",
+      "--full-stdout",
+      "--results"
+    ],
+    "exit": 0,
+    "expected": "# claude session aaaaaaaa-1111-4111-8111-111111111111\n- title: Mailbox routing\n- home: ~/.claude\n- path: ~/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl\n- cwd: ~/project\n- branch: fixture\n- model: fixture-model\n- time: 2026-09-25 10:00 -> 2026-09-25 10:00 (local UTC)\n- turns: 2\n\n---- turn 1/2 ----\n\n## 10:00 USER\nRepair mailbox routing for café FIX-42\n\n10:00 ASSISTANT:\nI will repair mailbox routing.\n10:00   tool Write: file_path=<HOME>/project/router.py\n10:00   ! tool error: permission denied\n\n---- turn 2/2 ----\n\n## 10:00 USER\nStill broken, fix mailbox routing\n",
+    "id": "show aaaaaaaa-1111-4111-8111-111111111111 --full-stdout --results",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "tree",
+      "aaaaaaaa-1111-4111-8111-111111111111"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing\n",
+    "id": "tree aaaaaaaa-1111-4111-8111-111111111111",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "resolve",
+      "bbbbbbbb-2222-4222-8222-222222222222",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "archived": false,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "first_prompt": "Repair mailbox routing for café FIX-42",
+        "harness": "codex",
+        "home": "~/.codex",
+        "id": "bbbbbbbb-2222-4222-8222-222222222222",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "nickname": null,
+        "originator": "cli",
+        "parent": null,
+        "path": "<HOME>/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl",
+        "provider_instance": "codex",
+        "started": "2026-09-25T10:00:00+00:00",
+        "t3_thread": "thread-second-fixture",
+        "t3_title": "Home session",
+        "title": "Codex mailbox",
+        "updated": "2026-09-25T10:00:01+00:00"
+      }
+    ],
+    "id": "resolve bbbbbbbb-2222-4222-8222-222222222222 --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "show",
+      "bbbbbbbb-2222-4222-8222-222222222222",
+      "--full-stdout",
+      "--results"
+    ],
+    "exit": 0,
+    "expected": "# codex session bbbbbbbb-2222-4222-8222-222222222222\n- title: Home session\n- T3 thread: thread-second-fixture (Home session)\n- home: ~/.codex\n- path: ~/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl\n- cwd: ~/project\n- branch: fixture\n- model: fixture-model\n- provider_instance: codex\n- originator: cli\n- time: 2026-09-25 10:00 -> 2026-09-25 10:00 (local UTC)\n- turns: 1\n\n---- turn 1/1 ----\n\n## 10:00 USER\nRepair mailbox routing for café FIX-42\n\n10:00 ASSISTANT:\nMailbox fixed.\n",
+    "id": "show bbbbbbbb-2222-4222-8222-222222222222 --full-stdout --results",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "tree",
+      "bbbbbbbb-2222-4222-8222-222222222222"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  codex    ~/.codex           bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  Home session  [t3=thread-second-fixture]\n",
+    "id": "tree bbbbbbbb-2222-4222-8222-222222222222",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "resolve",
+      "thread-fixture-333333",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "archived": false,
+        "branch": "fixture",
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "t3",
+        "home": "~/.t3/userdata",
+        "id": "thread-fixture-333333",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "~/.t3/userdata/state.sqlite#thread=thread-fixture-333333",
+        "provider": "codex",
+        "provider_id": "bbbbbbbb-2222-4222-8222-222222222222",
+        "provider_instance": "codex",
+        "started": "2026-09-25T10:00:00+00:00",
+        "status": "running",
+        "title": "T3 mailbox",
+        "updated": "2026-09-25T10:00:00+00:00"
+      }
+    ],
+    "id": "resolve thread-fixture-333333 --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "show",
+      "thread-fixture-333333",
+      "--full-stdout",
+      "--results"
+    ],
+    "exit": 0,
+    "expected": "# codex session bbbbbbbb-2222-4222-8222-222222222222\n- title: T3 mailbox\n- T3 thread: thread-fixture-333333 (T3 mailbox)\n- home: ~/.codex\n- path: ~/.codex/sessions/2026/09/25/rollout-fixture-bbbbbbbb-2222-4222-8222-222222222222.jsonl\n- cwd: ~/project\n- branch: fixture\n- model: fixture-model\n- provider_instance: codex\n- originator: cli\n- time: 2026-09-25 10:00 -> 2026-09-25 10:00 (local UTC)\n- turns: 1\n\n---- turn 1/1 ----\n\n## 10:00 USER\nRepair mailbox routing for café FIX-42\n\n10:00 ASSISTANT:\nMailbox fixed.\n",
+    "id": "show thread-fixture-333333 --full-stdout --results",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "tree",
+      "thread-fixture-333333"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  codex    ~/.codex           bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  T3 mailbox  [t3=thread-fixture-333333]\n",
+    "id": "tree thread-fixture-333333",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "resolve",
+      "ses_fixture444444",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "archived": false,
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "opencode",
+        "home": "~/.local/share/opencode",
+        "id": "ses_fixture444444",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "parent": null,
+        "path": "~/.local/share/opencode/opencode.db#session=ses_fixture444444",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "OpenCode mailbox",
+        "updated": "2026-09-25T10:00:02.172000+00:00"
+      }
+    ],
+    "id": "resolve ses_fixture444444 --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "show",
+      "ses_fixture444444",
+      "--full-stdout",
+      "--results"
+    ],
+    "exit": 0,
+    "expected": "# opencode session ses_fixture444444\n- title: OpenCode mailbox\n- home: ~/.local/share/opencode\n- path: ~/.local/share/opencode/opencode.db#session=ses_fixture444444\n- cwd: ~/project\n- model: fixture-model\n- time: 2026-09-25 10:00 -> 2026-09-25 10:00 (local UTC)\n- turns: 1\n\n---- turn 1/1 ----\n\n## 10:00 USER\nRepair mailbox routing for café FIX-42\n",
+    "id": "show ses_fixture444444 --full-stdout --results",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "tree",
+      "ses_fixture444444"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  opencode ~/.local/share/opencode ses_fixture444444\n    ~/project  OpenCode mailbox\n",
+    "id": "tree ses_fixture444444",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "resolve",
+      "grok-fixture-555555",
+      "--json"
+    ],
+    "exit": 0,
+    "expected": [
+      {
+        "branch": null,
+        "cwd": "<HOME>/project",
+        "first_prompt": null,
+        "harness": "grok",
+        "home": "~/.grok",
+        "id": "grok-fixture-555555",
+        "kind": "main",
+        "launch_launcher": null,
+        "launch_parent": null,
+        "launch_subject": null,
+        "launch_surface": null,
+        "model": "fixture-model",
+        "originator": null,
+        "parent": null,
+        "path": "<HOME>/.grok/sessions/fixture/grok-fixture-555555/chat_history.jsonl",
+        "started": "2026-09-25T10:00:00+00:00",
+        "title": "Grok mailbox",
+        "updated": "2026-09-25T10:00:03+00:00"
+      }
+    ],
+    "id": "resolve grok-fixture-555555 --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "show",
+      "grok-fixture-555555",
+      "--full-stdout",
+      "--results"
+    ],
+    "exit": 0,
+    "expected": "# grok session grok-fixture-555555\n- title: Grok mailbox\n- home: ~/.grok\n- path: ~/.grok/sessions/fixture/grok-fixture-555555/chat_history.jsonl\n- cwd: ~/project\n- model: fixture-model\n- time: 2026-09-25 10:00 -> 2026-09-25 10:00 (local UTC)\n- turns: 1\n\n---- turn 1/1 ----\n\n## 10:00 USER\nRepair mailbox routing for café FIX-42\n",
+    "id": "show grok-fixture-555555 --full-stdout --results",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "tree",
+      "grok-fixture-555555"
+    ],
+    "exit": 0,
+    "expected": "2026-09-25 10:00  grok     ~/.grok            grok-fixture-555555\n    ~/project  Grok mailbox\n",
+    "id": "tree grok-fixture-555555",
+    "kind": "text"
+  },
+  {
+    "args": [
+      "resolve",
+      "no-such-session",
+      "--json"
+    ],
+    "exit": 1,
+    "expected": [],
+    "id": "resolve no-such-session --json",
+    "kind": "json"
+  },
+  {
+    "args": [
+      "handoff",
+      "aaaaaaaa-1111-4111-8111-111111111111",
+      "--output",
+      "<HOME>/handoff.md"
+    ],
+    "exit": 0,
+    "expected": "# Handoff draft\n[handoff-from harness=claude session=aaaaaaaa-1111-4111-8111-111111111111 host=fixture-host]\n\n```text\n# claude session aaaaaaaa-1111-4111-8111-111111111111\n- title: Mailbox routing\n- home: ~/.claude\n- path: ~/.claude/projects/fixture/aaaaaaaa-1111-4111-8111-111111111111.jsonl\n- cwd: ~/project\n- branch: fixture\n- model: fixture-model\n- time: 2026-09-25 10:00 -> 2026-09-25 10:00 (local UTC)\n```\n\n> Draft extracted from a transcript by agent-traces. It records what the session said and did,\n> not what is true now. Verify branch, files, and ticket state before acting on it.\n\n## Goal (first request)\n\n```text\nRepair mailbox routing for café FIX-42\n```\n\n## All user requests (2)\n1. [2026-09-25 10:00]\n```text\nRepair mailbox routing for café FIX-42\n```\n2. [2026-09-25 10:00]\n```text\nStill broken, fix mailbox routing\n```\n\n## Where it ended (last assistant message; from the transcript, unverified)\n\n```text\nI will repair mailbox routing.\n```\n\n## Current state checks (fill in before handing off)\nFor each claim above about branches, commits, files, tickets, MRs, or tests, run a live check and record\n`verified: <command> -> <result>`, or leave the claim under 'from the transcript, unverified'.\n\n## Files written or edited (1)\n- `~/project/router.py`\n\n## Commands run (0)\n(none)\n\n## Errors and interruptions (1)\n- [2026-09-25 10:00] `permission denied`\n\n## Tickets and merge requests mentioned\n`FIX-42`\n\n## Size\n2 turns, 1 tool calls, 1 errors\n",
+    "id": "handoff aaaaaaaa-1111-4111-8111-111111111111 --output <HOME>/handoff.md",
+    "kind": "artifact"
+  }
+]

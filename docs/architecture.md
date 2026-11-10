@@ -27,7 +27,7 @@ observed-source guards. SQLite uses read-only open flags and normal WAL reader
 coordination; it never changes journal mode or requests immutable/nolock reads.
 No runtime command shells out to Python, rg, SQLite, or another executable.
 
-The test-only Python reference is frozen. Synthetic fixtures and private captures
-feed both CLIs through subprocesses, compare observable outputs, and check that
-fixture stores remain unchanged. CI prepares native platform validation; release
-archives are a separate manual workflow without publication permissions.
+Synthetic fixtures feed the native CLI through subprocesses. The parity suite
+compares observable outputs with stored goldens and checks that fixture stores
+remain unchanged. Independent handoff safety assertions and v1 schema checks
+supplement the output comparisons. CI checks goldens without regenerating them.

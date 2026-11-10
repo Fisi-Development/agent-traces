@@ -1,80 +1,81 @@
 # Parity gates
 
-`tests/reference/agent_traces.py` is the frozen Python oracle. Do not edit it to
-make a Rust discrepancy disappear. `tests/parity.py` loads it with `runpy`, sets
-its home, cache, output and T3 constants to a scratch fixture root, and freezes
-the clock. `TZ=UTC` fixes rendering timezone. `PYTHONUTF8=1` enables the Python
-reference's UTF-8 file mode, an explicit baseline safety correction for Windows
-where its legacy default encoding can corrupt Unicode handoff output. The
-reference source remains unchanged. The subprocess environment removes configured provider homes and
-self IDs so no command reaches a real store. Reference liveness probes are
-replaced with an empty process inventory, never `os.kill(pid, 0)` on Windows.
+`tests/parity.py` compares the native executable with stored expectations in
+`tests/golden/cases.json` and `tests/golden/handoff_safety.json`. It does not load
+or run a Python engine. Python remains development tooling for fixtures and
+checks; `--schema` additionally needs the optional `jsonschema` package.
 
-`tests/fixtures/corpus.py` builds synthetic stores from the documented layouts.
-All SQLite databases enter WAL mode during fixture creation, before either CLI
-opens them. Tests compare hashes of database and transcript content before and
-after execution. WAL coordination files are excluded because ordinary read-only
-SQLite can manage shared memory; this is not permission to write application data.
+`tests/fixtures/corpus.py` builds synthetic stores for all five adapters. The
+subprocess environment isolates provider homes, cache, output, self IDs, process
+inventory, clock and timezone. Both host variables are fixed to `fixture-host`.
+Every subprocess starts in the scratch home's `project` directory, including
+empty-store checks. Synthetic transcript mtimes are fixed as well.
+No command needs access to a real session store.
 
-The corpus covers five adapters, T3/provider merging, Unicode, corrupt JSONL,
-an incomplete trailing record, tool calls, errors, user corrections, no-match
-exits, and handoff artifact content. The runner checks legacy ls/find/resolve
-JSON and show/tree/live/touched/failures text. List ordering, ID values, hit
-ordering, missing keys and nulls remain significant. Only the scratch root and
-equivalent RFC3339 spellings are normalized. Object member order is immaterial.
-stderr is diagnostic rather than a byte-level compatibility promise.
+The 57 scenarios comprise 36 ordinary CLI cases, 10 handoff identity cases,
+four Claude child cases and seven Markdown/cap cases. Ordinary cases compare
+exit codes and JSON output, text output or the written handoff artifact. The
+seven Markdown/cap cases also compare stored artifacts and exit codes. Identity
+and child cases independently assert marker boundaries, rejection, exit codes
+and whether an artifact was written. Markdown checks preserve code-span and
+fence safety, UTF-8 byte caps, protected excerpts and omission counts. A native
+10,000-prompt performance guard remains independent of the goldens.
 
-Run a focused case with `--case resolve`, or validate the Python fixture alone
-with `--reference-only`. A run fails on the first malformed JSON and reports
-every ordinary output difference. `--schema` additionally checks all six v1
-commands against the checked-in Draft 2020-12 schema using optional jsonschema.
-The executable is also run with an empty PATH to catch accidental interpreter
-or ripgrep runtime dependencies.
+Goldens are generated on Linux or macOS; `--update-golden` refuses to run on
+Windows. On Windows only, the driver turns CRLF into LF and backslashes into
+`/` in paths under the scratch home, absolute or in the `~\...` form, before
+comparing. Of the seven stored Markdown/cap artifacts, the four that hit the
+49,152-byte cap (`10000-prompts`, `500-prompts`, `emoji-protected`,
+`auxiliary-bound`) are compared on Linux and macOS only: the cap counts CRLF on
+Windows, so a capped artifact keeps fewer prompts there. The other three are
+compared on every platform, and every case's independent checks and exit code
+run everywhere.
 
-This fixture suite is not a claim of real-store parity. Before promotion, select
-known inactive sessions and capture them into a new private directory:
+Each golden entry records its ID, arguments, output kind, exit code and expected
+output. JSON is parsed one value per output line; object member order is
+immaterial. Keys, nulls, list order and other text remain significant. Actual
+output replaces the scratch home with `<HOME>`, canonicalizes equivalent
+RFC3339 spellings in the listed timestamp fields, and on Windows applies the
+line-ending and path-separator rules above. stderr remains
+diagnostic and is not compared. Missing or extra golden entries fail the run.
+
+All ordinary commands also run with an empty PATH to detect runtime program
+dependencies. Listing must yield four merged sessions. `--schema` validates
+populated and empty-store v1 envelopes, status/exit agreement, live observations,
+self identity and missing-host rejection. Store-content hashes before and after
+execution protect against mutation. WAL coordination files are excluded because
+ordinary read-only SQLite can manage shared memory; this does not permit writes
+to application data. Fixtures create WAL databases before commands open them.
+
+## Running and regenerating
+
+From `agent-traces/`, use an already built executable:
 
 ```sh
-python tests/fixtures/capture.py --home /home/user --output /private/parity-corpus --id SESSION_ID --id OTHER_ID
-python tests/parity.py --snapshot /private/parity-corpus --query SEARCH_TERM --binary target/release/agent-traces
+python3 tests/parity.py --schema --binary target/debug/agent-traces
+python3 tests/parity.py --case resolve --binary target/debug/agent-traces
+python3 tests/parity.py --update-golden --binary target/debug/agent-traces
 ```
 
-The capture helper opens source SQLite with mode=ro, verifies existing WAL,
-backs up Codex and OpenCode using SQLite's backup API, and narrows discovery rows
-in the scratch copy. T3 can be gigabytes, so it copies the selected thread,
-project, runtime, message and activity rows with their original table schemas
-under one read-only transaction. It copies only selected transcript files, rewrites Codex
-rollout paths in the scratch database, and checks source transcript hashes and
-timestamps for concurrent edits. A source change invalidates the capture.
-Database backups are individually consistent, not a global transaction.
-Physical backup files can retain unselected private database content; keep the
-entire corpus private and outside git. The manifest records source transcript
-hashes, host, capture time and selected IDs. Real-corpus mode compares listing,
-search, resolve, and the last three rendered turns per selected session.
-Preserve redacted counterexamples as new fixtures.
-Measure cold and warm listing, broad and narrow search, live, resolve, and large
-show on each available host. Linux/macOS CI cannot establish runtime parity on
-the user's actual Linux/macOS stores.
+`--binary` defaults to the debug executable. `--case` filters ordinary comparisons
+and includes handoff safety when its filter contains `handoff`. It cannot be
+combined with `--update-golden`. Regeneration rewrites both golden files from the
+built native binary. A person reviews every regenerated diff against intended
+behavior before accepting it. CI never regenerates expectations.
 
-Native Windows, macOS and Linux CI must pass format, clippy, unit tests and parity
-before a binary is promoted. Release archive generation is manual and read-only
-with respect to repository hosting. Publication, signing and tag pushes require
-separate authorization. Both macOS architectures use native runners: `macos-15` for ARM64 and
-`macos-15-intel` for x64, in CI and release smoke tests. Runner labels follow
-the [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+These synthetic checks do not establish compatibility with every real store.
+Preserve sanitized counterexamples as fixtures. Native Windows, macOS and Linux
+CI runs native checks and the same golden suite, including release binaries.
 
 ## Deliberate differences and boundaries
 
 Windows process probes use query-only APIs and compare recorded FILETIME start
 values to detect PID reuse. UTF-8 output is independent of the Windows code page.
-Search uses an in-process prefilter, avoiding the reference's Windows command-line
-length limit. SQLite databases must already use WAL; other modes are reported,
-never converted. Malformed records produce diagnostics and v1 partial results.
-Legacy stderr is not byte-identical and legacy JSON object key order is not an
-interface guarantee.
+Search uses an in-process prefilter. SQLite databases must already use WAL;
+other modes are reported, never converted. Malformed records produce diagnostics
+and v1 partial results. Legacy stderr is not byte-identical and JSON object key
+order is not an interface guarantee.
 
-The legacy parser accepts nonstandard JSON NaN/Infinity and lone surrogates that
-serde_json rejects. Rust reports those records as malformed; it does not silently
-coerce their contents. These nonstandard JSON extensions did not appear in the passing real-store
-golden cases. Negative count flags retain Python slicing behavior and have
-explicit golden cases.
+The legacy parser accepted nonstandard JSON NaN/Infinity and lone surrogates
+that serde_json rejects. Rust reports those records as malformed. Negative
+count flags retain Python slicing behavior and have explicit golden cases.

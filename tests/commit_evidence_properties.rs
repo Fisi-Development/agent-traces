@@ -138,7 +138,7 @@ impl Fixture {
     }
 }
 
-fn candidate<'a>(doc: &'a Value, i: usize) -> Option<&'a Value> {
+fn candidate(doc: &Value, i: usize) -> Option<&Value> {
     doc["candidates"]
         .as_array()
         .unwrap()
@@ -237,11 +237,11 @@ fn generated_identifier_boundaries() {
                 ];
                 f.write(&texts);
                 let doc = f.run(A);
-                for i in 0..5 {
+                for (i, text) in texts.iter().enumerate().take(5) {
                     prop_assert!(
                         candidate(&doc, i).is_none(),
                         "identifier {:?} matched",
-                        texts[i]
+                        text
                     );
                 }
                 prop_assert!(candidate(&doc, 5).is_some(), "underscore delimiter lost");

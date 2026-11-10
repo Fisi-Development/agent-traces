@@ -96,4 +96,8 @@ def create(home):
     grok = home / ".grok/sessions/fixture" / IDS["grok"]
     write_json(grok / "summary.json", {"info": {"cwd": cwd}, "generated_title": "Grok mailbox", "created_at": TS, "last_active_at": "2026-09-25T10:00:03Z", "current_model_id": "fixture-model"})
     jsonl(grok / "chat_history.jsonl", [{"type": "user", "prompt_index": 0, "timestamp": TS, "content": "<runtime_info>ignored</runtime_info><user_query>" + prompt + "</user_query>"}])
+    # Nothing the fixture writes keeps the time of the run.
+    for path in home.rglob("*"):
+        if path.is_file():
+            os.utime(path, (EPOCH, EPOCH))
     return IDS.copy()
