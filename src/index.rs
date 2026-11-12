@@ -8,7 +8,7 @@
 use crate::{
     adapters::{claude, codex, grok},
     context::Context,
-    model::{Diagnostic, Session},
+    model::{Diagnostic, Event, Session},
     storage::jsonl,
     util::{event_text, s},
 };
@@ -24,9 +24,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const FILE_NAME: &str = "find-index-v2.sqlite";
-/// The previous schema's file, removed on open (it has no `tail_hash`).
-const OLD_FILE_NAME: &str = "find-index-v1.sqlite";
+pub const FILE_NAME: &str = "find-index-v3.sqlite";
+/// Earlier schemas' files, removed on open: v1 has no `tail_hash`, v2 no `docs`.
+const OLD_FILE_NAMES: [&str; 2] = ["find-index-v1.sqlite", "find-index-v2.sqlite"];
 /// Bytes before the stored offset whose hash must still match for an append.
 const TAIL_BYTES: u64 = 4096;
 const DEFAULT_BUDGET_MS: u64 = 8000;
@@ -93,13 +93,18 @@ fn record_events(harness: &str, record: &Value) -> Vec<crate::model::Event> {
     }
 }
 
-/// Lowercased `(role, event_text)` rows for the roles the index stores, read
-/// from `start` to the end of the last complete line. Returns the rows, the
+/// Lowercased `(role, event_text, event json)` rows for the roles the index
+/// stores, read from `start` to the end of the last complete line. Returns the rows, the
 /// offset after that line and the hash of the up to `TAIL_BYTES` bytes ending
 /// there (empty for a compressed file, which is always reindexed whole). A final
 /// line with no newline counts only when it parses, as the raw readers do.
 /// Rows, end offset and tail hash of one `read_events` pass.
-type Parsed = (Vec<(String, String)>, u64, String);
+type Parsed = (Vec<Row>, u64, String);
+
+/// One stored event: role, lowercased text, the event's JSON, the byte offset
+/// where its record starts (`rec`) and the record's `uuid` (Claude only, else
+/// empty).
+type Row = (String, String, String, i64, String);
 
 fn read_events(
     harness: &str,
@@ -131,11 +136,22 @@ fn read_events(
         }
         match jsonl::decode(&raw) {
             Ok(record) => {
+                let rec = consumed as i64;
+                // Only the Claude adapter drops records by uuid; see `events_of`.
+                let uuid = if harness == "claude" {
+                    s(&record, "uuid").to_owned()
+                } else {
+                    String::new()
+                };
                 for event in record_events(harness, &record) {
                     if INDEXED_ROLES.contains(&event.role.as_str()) {
                         let body = event_text(&event).to_lowercase();
                         if !body.is_empty() {
-                            rows.push((event.role.clone(), body));
+                            // A failure cannot happen for an `Event`; a `null` row
+                            // makes the scorer fall back to the raw transcript.
+                            let json =
+                                serde_json::to_string(&event).unwrap_or_else(|_| "null".to_owned());
+                            rows.push((event.role.clone(), body, json, rec, uuid.clone()));
                         }
                     }
                 }
@@ -204,6 +220,7 @@ struct Stored {
     offset: i64,
     mode: String,
     tail_hash: String,
+    n_events: i64,
 }
 
 impl Index {
@@ -213,8 +230,10 @@ impl Index {
             std::fs::create_dir_all(dir)?;
         }
         // Best effort: the old schema's database is dead weight now.
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(ctx.cache_dir.join(format!("{OLD_FILE_NAME}{suffix}")));
+        for old in OLD_FILE_NAMES {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(ctx.cache_dir.join(format!("{old}{suffix}")));
+            }
         }
         let conn = Connection::open(&path)?;
         Self::init(conn)
@@ -223,21 +242,54 @@ impl Index {
     fn init(conn: Connection) -> Result<Self> {
         conn.busy_timeout(Duration::from_secs(5))?;
         let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
-        conn.execute_batch(
-            "PRAGMA synchronous=NORMAL;
-             CREATE TABLE IF NOT EXISTS files(
+        conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
+        // A v3 file from before `rec`, `uuid` and `n_events`, or one left half
+        // rebuilt by an interrupted run, is rebuilt from scratch. The check and the
+        // rebuild run in one transaction (SQLite DDL is transactional), so a stop
+        // midway rolls back and the next open sees the same mismatch again.
+        let tx = conn.unchecked_transaction()?;
+        let has = |table: &str, column: &str| -> bool {
+            tx.query_row(
+                &format!("SELECT count(*) > 0 FROM pragma_table_info('{table}') WHERE name = ?1"),
+                [column],
+                |r| r.get(0),
+            )
+            .unwrap_or(false)
+        };
+        let any_table: bool = tx
+            .query_row(
+                "SELECT count(*) > 0 FROM sqlite_master WHERE name IN ('files', 'events', 'docs')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        let current = has("files", "n_events") && has("docs", "uuid") && has("events", "body");
+        if any_table && !current {
+            tx.execute_batch(
+                "DROP TABLE IF EXISTS docs; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS files;",
+            )?;
+        }
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS files(
                  path TEXT PRIMARY KEY, harness TEXT NOT NULL, size INTEGER NOT NULL,
                  mtime_ns INTEGER NOT NULL, offset INTEGER NOT NULL, mode TEXT NOT NULL,
-                 tail_hash TEXT NOT NULL);
+                 tail_hash TEXT NOT NULL, n_events INTEGER NOT NULL);
              CREATE VIRTUAL TABLE IF NOT EXISTS events USING fts5(
-                 body, path UNINDEXED, role UNINDEXED, tokenize='trigram');",
+                 body, path UNINDEXED, role UNINDEXED, tokenize='trigram');
+             -- One row per `events` row, with the same rowid: the event as the
+             -- adapter produced it, so a find can score it without the transcript.
+             CREATE TABLE IF NOT EXISTS docs(
+                 id INTEGER PRIMARY KEY, path TEXT NOT NULL, ord INTEGER NOT NULL,
+                 event TEXT NOT NULL, rec INTEGER NOT NULL, uuid TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS docs_path_ord ON docs(path, ord);",
         )?;
+        tx.commit()?;
         Ok(Self { conn })
     }
 
     fn stored(conn: &Connection, key: &str) -> rusqlite::Result<Option<Stored>> {
         conn.query_row(
-            "SELECT size, mtime_ns, offset, mode, tail_hash FROM files WHERE path = ?1",
+            "SELECT size, mtime_ns, offset, mode, tail_hash, n_events FROM files WHERE path = ?1",
             [key],
             |r| {
                 Ok(Stored {
@@ -246,6 +298,7 @@ impl Index {
                     offset: r.get(2)?,
                     mode: r.get(3)?,
                     tail_hash: r.get(4)?,
+                    n_events: r.get(5)?,
                 })
             },
         )
@@ -330,23 +383,49 @@ impl Index {
         if !same {
             return Ok(Status::Skipped);
         }
+        // An append adds to the stored count; a first or full index replaces it.
+        let n_events = rows.len() as i64
+            + match (&before, replace) {
+                (Some(b), false) => b.n_events,
+                _ => 0,
+            };
         if replace {
             tx.execute("DELETE FROM events WHERE path = ?1", [key])?;
+            tx.execute("DELETE FROM docs WHERE path = ?1", [key])?;
         }
         {
+            let mut ord: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(ord) + 1, 0) FROM docs WHERE path = ?1",
+                [key],
+                |r| r.get(0),
+            )?;
             let mut insert =
                 tx.prepare_cached("INSERT INTO events(body, path, role) VALUES (?1, ?2, ?3)")?;
-            for (role, body) in &rows {
+            let mut insert_doc = tx.prepare_cached(
+                "INSERT INTO docs(id, path, ord, event, rec, uuid) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for (role, body, event, rec, uuid) in &rows {
                 insert.execute(params![body, key, role])?;
+                insert_doc.execute(params![tx.last_insert_rowid(), key, ord, event, rec, uuid])?;
+                ord += 1;
             }
         }
         tx.execute(
-            "INSERT INTO files(path, harness, size, mtime_ns, offset, mode, tail_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO files(path, harness, size, mtime_ns, offset, mode, tail_hash, n_events)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(path) DO UPDATE SET harness = excluded.harness, size = excluded.size,
                  mtime_ns = excluded.mtime_ns, offset = excluded.offset, mode = excluded.mode,
-                 tail_hash = excluded.tail_hash",
-            params![key, harness, size, mtime_ns, offset as i64, mode, tail_hash],
+                 tail_hash = excluded.tail_hash, n_events = excluded.n_events",
+            params![
+                key,
+                harness,
+                size,
+                mtime_ns,
+                offset as i64,
+                mode,
+                tail_hash,
+                n_events
+            ],
         )?;
         tx.commit()?;
         Ok(Status::Refreshed)
@@ -386,6 +465,10 @@ impl Index {
                 params_from_iter(chunk),
             )?;
             tx.execute(
+                &format!("DELETE FROM docs WHERE path IN ({marks})"),
+                params_from_iter(chunk),
+            )?;
+            tx.execute(
                 &format!("DELETE FROM files WHERE path IN ({marks})"),
                 params_from_iter(chunk),
             )?;
@@ -420,6 +503,49 @@ impl Index {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// The stored events of one transcript in file order, as the adapter would
+    /// yield them, or `None` when the index cannot vouch for them: the file's
+    /// size or mtime differ from the stored ones, its row count differs from
+    /// `n_events`, or SQLite fails.
+    fn events_of(&self, ctx: &Context, key: &str) -> Option<Vec<Event>> {
+        let stored = Self::stored(&self.conn, key).ok()??;
+        let meta = std::fs::metadata(jsonl::locate(&ctx.expand(key))).ok()?;
+        let mtime_ns = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos() as i64);
+        if (meta.len() as i64, mtime_ns) != (stored.size, stored.mtime_ns) {
+            return None;
+        }
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT event, rec, uuid FROM docs WHERE path = ?1 ORDER BY ord")
+            .ok()?;
+        let mut rows = statement.query([key]).ok()?;
+        let mut events = Vec::new();
+        let mut read = 0i64;
+        // The Claude adapter keeps the first record of each uuid and drops later
+        // ones whole; a stored row survives only if its record is that first one.
+        // Accepted difference (owner, review round 2 of #1315): the raw reader
+        // drops lines without a term before its uuid check, so which record claims
+        // a uuid there depends on the query, and a rowless record (`isMeta`, tool
+        // results) can claim it too. Here the first stored record wins whatever the
+        // query. The two agree whenever same-uuid records are copies, as a resumed
+        // session's are.
+        let mut first: HashMap<String, i64> = HashMap::new();
+        while let Some(row) = rows.next().ok()? {
+            read += 1;
+            let (event, rec, uuid): (String, i64, String) =
+                (row.get(0).ok()?, row.get(1).ok()?, row.get(2).ok()?);
+            if !uuid.is_empty() && *first.entry(uuid).or_insert(rec) != rec {
+                continue;
+            }
+            events.push(serde_json::from_str(&event).ok()?);
+        }
+        (read == stored.n_events).then_some(events)
+    }
+
     fn event_count(&self) -> Result<u64> {
         Ok(self
             .conn
@@ -445,6 +571,24 @@ enum Mode {
     Unavailable(String),
 }
 
+/// The index and the transcripts it answered in one query, kept on the
+/// `Context` so scoring can read those transcripts' events from `docs`.
+pub struct Served {
+    index: Index,
+    paths: HashSet<String>,
+}
+
+impl Served {
+    /// The events of `key` when this query's index answered it, else `None`,
+    /// which also covers any read error: the caller then reads the transcript.
+    pub fn events(&self, ctx: &Context, key: &str) -> Option<Vec<Event>> {
+        if !self.paths.contains(key) {
+            return None;
+        }
+        self.index.events_of(ctx, key)
+    }
+}
+
 /// One query's use of the index, from refresh to the footer line.
 pub struct Run {
     mode: Mode,
@@ -454,6 +598,8 @@ pub struct Run {
     refreshed: usize,
     raw: usize,
     answers: HashMap<String, Answer>,
+    /// Every path the index held current, whichever query kept it.
+    served: HashSet<String>,
 }
 
 impl Run {
@@ -471,6 +617,7 @@ impl Run {
             refreshed: 0,
             raw: 0,
             answers: HashMap::new(),
+            served: HashSet::new(),
         }
     }
 
@@ -503,6 +650,7 @@ impl Run {
             Ok(()) => self.mode = Mode::Ready(index),
             Err(e) => {
                 self.answers.clear();
+                self.served.clear();
                 self.mode = Mode::Unavailable(format!("{e:#}"));
             }
         }
@@ -549,6 +697,7 @@ impl Run {
                 slot.insert(index.paths_with(&low, &roles)?);
             }
         }
+        self.served = current.iter().cloned().collect();
         for key in current {
             let keep = queries
                 .iter()
@@ -573,11 +722,19 @@ impl Run {
 
     /// The footer text, and the `index_unavailable` diagnostic when it applies.
     pub fn finish(self, ctx: &Context) {
-        let summary = match &self.mode {
+        let Self {
+            mode,
+            indexed,
+            refreshed,
+            raw,
+            served,
+            ..
+        } = self;
+        let summary = match &mode {
             Mode::Off => "off".to_owned(),
             Mode::Pending | Mode::Ready(_) => format!(
                 "{} indexed, {} refreshed now, {} scanned raw",
-                self.indexed, self.refreshed, self.raw
+                indexed, refreshed, raw
             ),
             Mode::Unavailable(reason) => {
                 ctx.diagnostics.borrow_mut().push(Diagnostic {
@@ -594,6 +751,14 @@ impl Run {
             }
         };
         *ctx.index_summary.borrow_mut() = Some(summary);
+        // Replaces what an earlier query left, so a raw query never scores from it.
+        *ctx.index_docs.borrow_mut() = match mode {
+            Mode::Ready(index) if !served.is_empty() => Some(Served {
+                index,
+                paths: served,
+            }),
+            _ => None,
+        };
     }
 }
 
@@ -775,6 +940,7 @@ mod tests {
                 .map(|e| (e.role.clone(), event_text(&e).to_lowercase()))
                 .filter(|(_, body)| !body.is_empty())
                 .collect();
+            let rows: Vec<_> = rows.into_iter().map(|(r, b, ..)| (r, b)).collect();
             assert_eq!(rows, expected, "{harness}");
         }
     }
@@ -799,5 +965,43 @@ mod tests {
             offset as usize,
             first.to_string().len() + 1 + second.to_string().len()
         );
+    }
+
+    /// `Served` vouches for a transcript only while the file is the one the index
+    /// stored: a rewrite after the refresh, within one query, sends the find back
+    /// to the transcript.
+    #[test]
+    fn served_events_are_dropped_when_the_file_changed_after_the_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = Context::from_env();
+        ctx.home = dir.path().to_path_buf();
+        ctx.cache_dir = dir.path().join("cache");
+        let path = dir.path().join("t.jsonl");
+        let key = path.to_str().unwrap().to_owned();
+        let record = |text: &str| {
+            json!({"type":"user","uuid":text,"message":{"content":text}}).to_string() + "\n"
+        };
+        std::fs::write(&path, record("alpha")).unwrap();
+        let mut index = Index::open(&ctx).unwrap();
+        assert_eq!(
+            index.refresh("claude", &key, &path, true).unwrap(),
+            Status::Refreshed
+        );
+        let served = Served {
+            index,
+            paths: HashSet::from([key.clone()]),
+        };
+        assert_eq!(served.events(&ctx, &key).unwrap().len(), 1);
+
+        // Same length, so only the mtime can tell; then a longer rewrite too.
+        std::fs::write(&path, record("omega")).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
+        assert!(served.events(&ctx, &key).is_none(), "mtime changed");
+        std::fs::write(&path, record("a much longer rewrite")).unwrap();
+        assert!(served.events(&ctx, &key).is_none(), "size changed");
+        std::fs::remove_file(&path).unwrap();
+        assert!(served.events(&ctx, &key).is_none(), "stat error");
     }
 }

@@ -3,11 +3,11 @@
 //! and a private cache, and compares it with the raw transcript scan
 //! (`AGENT_TRACES_NO_INDEX=1`).
 //!
-//! BM25 scores are computed over the candidate sessions' events. The raw scan
-//! keeps every session whose file text holds the terms, the index only those
-//! whose in-scope events do, so a decoy session can shift a score without
-//! changing which sessions match or their hits. Cases without a decoy compare
-//! byte for byte; the others compare matches and hits with scores dropped.
+//! BM25 scores are computed over the candidate sessions' events. The index
+//! scores a session from every in-scope event it stored, the raw scan from the
+//! lines that hold a term plus a count of the others, so `_score` and the order
+//! of equal-quality sessions may differ. Which sessions match, and each one's
+//! hits, must not: every comparison against the raw scan drops the score.
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -186,6 +186,17 @@ fn store() -> tempfile::TempDir {
     t
 }
 
+/// Session ids with their hit snippets, for failure messages.
+fn brief(stdout: &str) -> String {
+    stdout
+        .lines()
+        .map(|l| {
+            let v: Value = serde_json::from_str(l).unwrap();
+            format!("{} {}\n", v["id"], v["hits"])
+        })
+        .collect()
+}
+
 /// Rows keyed by address with `_score` dropped, to compare matches and hits.
 fn matches_only(stdout: &str) -> Vec<Value> {
     let mut rows: Vec<Value> = stdout
@@ -193,6 +204,11 @@ fn matches_only(stdout: &str) -> Vec<Value> {
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
         .map(|mut row| {
             row.as_object_mut().unwrap().remove("_score");
+            // Hits are ordered by BM25, so their order (and where `--hits N`
+            // cuts) may differ between the paths; the set must not.
+            if let Some(hits) = row["hits"].as_array_mut() {
+                hits.sort_by_key(|h| h.to_string());
+            }
             row
         })
         .collect();
@@ -204,58 +220,40 @@ fn matches_only(stdout: &str) -> Vec<Value> {
 fn the_index_answers_what_the_raw_scan_answers() {
     let t = store();
     let home = t.path();
-    // (args, scores comparable): a case with a decoy session may shift scores.
-    let cases: &[(&[&str], bool)] = &[
-        (&["alpha", "beta", "--in", "prompts"], false),
-        (&["alpha", "beta", "--in", "assistant"], false),
-        (&["alpha", "--in", "assistant"], false),
-        (&["needle-result-only", "--in", "prompts"], true),
-        (&["needle-result-only", "--in", "tools"], true),
-        (&["needle-result-only", "--in", "results"], true),
-        (&["needle-result-only", "--in", "all"], true),
-        (&["zq", "--in", "prompts"], true),
-        (&["ärger", "--in", "prompts"], true),
-        (&["ÄRGER", "--in", "prompts"], true),
-        (&["Ärger", "--in", "prompts"], true),
-        (&["\"quoted phrase\"", "--in", "prompts"], true),
-        (&["quoted", "phrase", "--in", "prompts"], true),
-        (&["metaonly-branch", "--in", "prompts"], true),
-        (&["metaonly-branch", "--in", "all"], true),
-        (&["codex", "alpha", "--in", "assistant"], true),
-        (&["codex", "--in", "prompts"], true),
+    let cases: &[&[&str]] = &[
+        &["alpha", "beta", "--in", "prompts"],
+        &["alpha", "beta", "--in", "assistant"],
+        &["alpha", "--in", "assistant"],
+        &["needle-result-only", "--in", "prompts"],
+        &["needle-result-only", "--in", "tools"],
+        &["needle-result-only", "--in", "results"],
+        &["needle-result-only", "--in", "all"],
+        &["zq", "--in", "prompts"],
+        &["quoted", "phrase", "--in", "prompts"],
+        &["metaonly-branch", "--in", "prompts"],
+        &["metaonly-branch", "--in", "all"],
+        &["codex", "alpha", "--in", "assistant"],
+        &["codex", "--in", "prompts"],
     ];
-    for (args, same_scores) in cases {
-        let mut full = vec!["find"];
-        full.extend_from_slice(args);
-        full.extend(["--json", "--limit", "50", "--hits", "5"]);
-        let with = run(home, &full);
-        let without = raw(home, &full);
-        assert_eq!(with.code, without.code, "{args:?}");
-        assert_eq!(
-            matches_only(&with.stdout),
-            matches_only(&without.stdout),
-            "{args:?}"
-        );
-        if *same_scores {
-            assert_eq!(with.stdout, without.stdout, "{args:?}");
-        }
-        // The raw scan is never behind the footer's claim.
-        let footer = |o: &Out| {
-            o.stderr
-                .lines()
-                .find(|l| l.contains("searched:"))
-                .unwrap()
-                .to_owned()
-        };
-        let scope = args[args.iter().position(|a| *a == "--in").unwrap() + 1];
-        if matches!(scope, "prompts" | "assistant") {
-            assert!(footer(&with).contains("index: "), "{args:?}");
-            assert!(!footer(&with).contains("index: off"), "{args:?}");
-        } else {
-            assert!(footer(&with).ends_with("index: off"), "{args:?}");
-        }
-        assert!(footer(&without).ends_with("index: off"), "{args:?}");
+    for args in cases {
+        compare_with_raw(home, args, false);
     }
+    // Non-ASCII terms: see `compare_with_raw`. `ärger` is the named example, as
+    // the raw scan cannot find the `ÄRGER im Büro` session.
+    for term in ["ärger", "ÄRGER", "Ärger"] {
+        compare_with_raw(home, &[term, "--in", "prompts"], true);
+    }
+    // A term with a double quote: the raw scan tests the JSON line, which escapes
+    // the quote, so it misses what the index (which stores the text) finds.
+    compare_with_raw(home, &["\"quoted phrase\"", "--in", "prompts"], true);
+    let named = run(home, &["find", "ärger", "--in", "prompts", "--ids"]);
+    assert!(named.stdout.contains(C4), "{}", named.stdout);
+    assert!(
+        !raw(home, &["find", "ärger", "--in", "prompts", "--ids"])
+            .stdout
+            .contains(C4)
+    );
+    assert_eq!(named.code, 0);
     // The cross-event and 2-character cases really matched something.
     let two = run(
         home,
@@ -284,10 +282,14 @@ fn the_index_answers_what_the_raw_scan_answers() {
         0
     );
     assert!(run(home, &["find", "needle-result-only", "--in", "prompts"]).code == 1);
-    // A term holding a double quote cannot occur in a JSON line, which escapes it,
-    // so both scans miss it; the index must not invent a hit the search then drops.
+    // The raw scan misses a quoted term (see above); the index finds it, as
+    // the prompt really contains it.
     assert_eq!(
         run(home, &["find", "\"quoted phrase\"", "--in", "prompts"]).code,
+        0
+    );
+    assert_eq!(
+        raw(home, &["find", "\"quoted phrase\"", "--in", "prompts"]).code,
         1
     );
     assert!(
@@ -295,6 +297,50 @@ fn the_index_answers_what_the_raw_scan_answers() {
             .stdout
             .contains(C5)
     );
+}
+
+/// Matches and hits equal the raw scan's, scores dropped. With `superset`, the
+/// indexed matches need only contain the raw ones: the index folds case with
+/// Unicode lowercasing, while the raw scan's line prefilter folds ASCII only
+/// (`src/storage/jsonl.rs`, `to_ascii_lowercase`), so it misses a non-ASCII case
+/// variant such as `ÄRGER` for `ärger`. Accepted by the owner; the index is the
+/// reference.
+fn compare_with_raw(home: &Path, args: &[&str], superset: bool) {
+    {
+        let mut full = vec!["find"];
+        full.extend_from_slice(args);
+        full.extend(["--json", "--limit", "50", "--hits", "5"]);
+        let with = run(home, &full);
+        let without = raw(home, &full);
+        let (indexed, direct) = (matches_only(&with.stdout), matches_only(&without.stdout));
+        let message = format!(
+            "{args:?}\nindexed:\n{}raw:\n{}",
+            brief(&with.stdout),
+            brief(&without.stdout)
+        );
+        if superset {
+            assert!(direct.iter().all(|r| indexed.contains(r)), "{message}");
+        } else {
+            assert_eq!(indexed, direct, "{message}");
+            assert_eq!(with.code, without.code, "{args:?}");
+        }
+        // The raw scan is never behind the footer's claim.
+        let footer = |o: &Out| {
+            o.stderr
+                .lines()
+                .find(|l| l.contains("searched:"))
+                .unwrap()
+                .to_owned()
+        };
+        let scope = args[args.iter().position(|a| *a == "--in").unwrap() + 1];
+        if matches!(scope, "prompts" | "assistant") {
+            assert!(footer(&with).contains("index: "), "{args:?}");
+            assert!(!footer(&with).contains("index: off"), "{args:?}");
+        } else {
+            assert!(footer(&with).ends_with("index: off"), "{args:?}");
+        }
+        assert!(footer(&without).ends_with("index: off"), "{args:?}");
+    }
 }
 
 /// Rows are keyed by the path the session listing reports, whose form can differ
@@ -325,7 +371,7 @@ fn offset(db: &rusqlite::Connection, path: &Path) -> i64 {
 }
 
 fn db(home: &Path) -> rusqlite::Connection {
-    rusqlite::Connection::open(home.join("cache/find-index-v2.sqlite")).unwrap()
+    rusqlite::Connection::open(home.join("cache/find-index-v3.sqlite")).unwrap()
 }
 
 #[test]
@@ -471,7 +517,7 @@ fn a_corrupt_index_falls_back_to_the_raw_scan() {
     let home = t.path();
     fs::create_dir_all(home.join("cache")).unwrap();
     fs::write(
-        home.join("cache/find-index-v2.sqlite"),
+        home.join("cache/find-index-v3.sqlite"),
         "this is not a database at all",
     )
     .unwrap();
@@ -548,7 +594,10 @@ fn a_same_size_rewrite_is_reindexed_not_trusted() {
     let indexed = run(home, &args);
     assert_eq!(indexed.code, 0, "{}", indexed.stderr);
     assert!(indexed.stdout.contains(C2), "{}", indexed.stdout);
-    assert_eq!(indexed.stdout, raw(home, &args).stdout);
+    assert_eq!(
+        matches_only(&indexed.stdout),
+        matches_only(&raw(home, &args).stdout)
+    );
     assert_eq!(
         run(home, &["find", "oldword", "--in", "prompts"]).code,
         1,
@@ -621,7 +670,7 @@ fn a_codex_path_that_already_ends_in_zst_is_decompressed_to_index() {
     assert!(direct.stdout.contains(id), "{}", direct.stdout);
     let indexed = run(home, &args);
     assert_eq!(indexed.code, 0, "{}", indexed.stderr);
-    assert_eq!(indexed.stdout, direct.stdout);
+    assert_eq!(matches_only(&indexed.stdout), matches_only(&direct.stdout));
     assert!(count(&db(home), &zst) > 0);
 }
 
@@ -683,24 +732,35 @@ fn a_same_size_rewrite_behind_a_partial_last_line_is_reindexed() {
     let args = ["find", "newword", "--in", "prompts", "--json"];
     let indexed = run(home, &args);
     assert_eq!(indexed.code, 0, "{}", indexed.stderr);
-    assert_eq!(indexed.stdout, raw(home, &args).stdout);
+    assert_eq!(
+        matches_only(&indexed.stdout),
+        matches_only(&raw(home, &args).stdout)
+    );
     assert_eq!(run(home, &["find", "oldword", "--in", "prompts"]).code, 1);
 }
 
 #[test]
-fn the_old_schema_database_is_removed_on_open() {
+fn the_old_schema_databases_are_removed_on_open() {
     let t = store();
     let home = t.path();
     let cache = home.join("cache");
     fs::create_dir_all(&cache).unwrap();
-    for suffix in ["", "-wal", "-shm"] {
-        fs::write(cache.join(format!("find-index-v1.sqlite{suffix}")), "old").unwrap();
+    let old = ["find-index-v1.sqlite", "find-index-v2.sqlite"];
+    for name in old {
+        for suffix in ["", "-wal", "-shm"] {
+            fs::write(cache.join(format!("{name}{suffix}")), "old").unwrap();
+        }
     }
     assert_eq!(run(home, &["find", "alpha", "--in", "prompts"]).code, 0);
-    for suffix in ["", "-wal", "-shm"] {
-        assert!(!cache.join(format!("find-index-v1.sqlite{suffix}")).exists());
+    for name in old {
+        for suffix in ["", "-wal", "-shm"] {
+            assert!(
+                !cache.join(format!("{name}{suffix}")).exists(),
+                "{name}{suffix}"
+            );
+        }
     }
-    assert!(cache.join("find-index-v2.sqlite").exists());
+    assert!(cache.join("find-index-v3.sqlite").exists());
 }
 
 #[test]
@@ -718,4 +778,222 @@ fn a_deleted_codex_rollout_still_listed_in_its_database_counts_once() {
     let again = run(home, &["index"]);
     assert_eq!(again.code, 0, "{}", again.stderr);
     assert!(again.stdout.contains(", 1 gone,"), "{}", again.stdout);
+}
+
+fn doc_count(db: &rusqlite::Connection, path: &Path) -> i64 {
+    db.query_row(
+        &format!("SELECT count(*) FROM docs WHERE {BY_NAME}"),
+        [name(path)],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Every FTS row has a `docs` row with the same rowid and path, and each file's
+/// `ord` runs 0, 1, 2 in file order.
+fn docs_mirror_events(db: &rusqlite::Connection) {
+    let orphans: i64 = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM events e LEFT JOIN docs d ON d.id = e.rowid
+                         WHERE d.id IS NULL OR d.path <> e.path)
+                  + (SELECT count(*) FROM docs d LEFT JOIN events e ON e.rowid = d.id
+                         WHERE e.rowid IS NULL)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(orphans, 0, "events and docs rows pair up by rowid");
+    let gaps: i64 = db
+        .query_row(
+            "SELECT count(*) FROM (SELECT path FROM docs GROUP BY path
+                                   HAVING count(*) <> max(ord) + 1 OR min(ord) <> 0)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(gaps, 0);
+}
+
+#[test]
+fn docs_rows_follow_events_rows_through_append_rewrite_delete_and_forget() {
+    let t = store();
+    let home = t.path();
+    let path = home.join(format!(".claude/projects/w/{C2}.jsonl"));
+    let other = home.join(format!(".claude/projects/w/{C3}.jsonl"));
+    assert_eq!(run(home, &["index"]).code, 0);
+    let rows = count(&db(home), &path);
+    assert!(rows > 0);
+    assert_eq!(doc_count(&db(home), &path), rows);
+    docs_mirror_events(&db(home));
+
+    // An append adds one row to each table and continues `ord`.
+    append(&path, &[user(5, "an appended-marker prompt")]);
+    assert_eq!(run(home, &["index"]).code, 0);
+    assert_eq!(count(&db(home), &path), rows + 1);
+    assert_eq!(doc_count(&db(home), &path), rows + 1);
+    docs_mirror_events(&db(home));
+
+    // A rewrite replaces both, not adds to them.
+    fs::write(&path, lines(&[user(0, "wholly new words")])).unwrap();
+    assert_eq!(run(home, &["index"]).code, 0);
+    assert_eq!(count(&db(home), &path), 1);
+    assert_eq!(doc_count(&db(home), &path), 1);
+    docs_mirror_events(&db(home));
+
+    // A deleted transcript loses both when the sweep forgets it.
+    assert!(doc_count(&db(home), &other) > 0);
+    fs::remove_file(&other).unwrap();
+    assert_eq!(run(home, &["index"]).code, 0);
+    assert_eq!(count(&db(home), &other), 0);
+    assert_eq!(doc_count(&db(home), &other), 0);
+    docs_mirror_events(&db(home));
+}
+
+/// The point of the stored events: a find over files the index holds current
+/// reads no transcript. After warming, each transcript's bytes are replaced with
+/// different text of the same length, and its size and mtime restored, so the
+/// index still believes the file is current. If the find read the transcript it
+/// would report the new text; it reports the old, from `docs`.
+#[test]
+fn an_indexed_find_reads_no_transcript_for_a_current_file() {
+    let t = store();
+    let home = t.path();
+    assert_eq!(run(home, &["index"]).code, 0);
+    let args = ["find", "alpha", "--in", "prompts", "--json", "--hits", "5"];
+    let before = run(home, &args);
+    assert_eq!(before.code, 0, "{}", before.stderr);
+    assert!(before.stdout.contains("alpha comes first"));
+
+    let mut changed = 0;
+    for entry in walk(&home.join(".claude"))
+        .into_iter()
+        .chain(walk(&home.join(".codex")))
+    {
+        if entry.extension().is_some_and(|e| e == "jsonl") {
+            let modified = fs::metadata(&entry).unwrap().modified().unwrap();
+            let text = fs::read_to_string(&entry).unwrap();
+            // Same length: "alpha" and "omega" are both five bytes.
+            fs::write(&entry, text.replace("alpha", "omega")).unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&entry)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+            changed += 1;
+        }
+    }
+    assert!(changed >= 6);
+    // The raw scan sees the edit, proving a transcript read would show it.
+    assert_eq!(raw(home, &args).code, 1, "alpha is gone from the files");
+
+    let after = run(home, &args);
+    assert!(
+        after
+            .stderr
+            .contains("index: 6 indexed, 0 refreshed now, 0 scanned raw"),
+        "{}",
+        after.stderr
+    );
+    assert_eq!(after.code, 0, "{}", after.stderr);
+    assert_eq!(after.stdout, before.stdout);
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if let Ok(read) = fs::read_dir(dir) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(walk(&path));
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// Raw `find` drops a Claude record whose `uuid` an earlier record in the file
+/// already used, whole. The index must serve the same events: alpha and beta sit
+/// in two prompts sharing one uuid, so only the first counts and no session has both.
+#[test]
+fn indexed_find_keeps_the_claude_uuid_dedup() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    let dup = |ts: usize, text: &str| {
+        let mut v = user(ts, text);
+        v["uuid"] = json!("shared-uuid");
+        v
+    };
+    claude(home, C1, &[dup(0, "alpha first"), dup(1, "beta second")]);
+    let args = ["find", "alpha", "beta", "--in", "prompts", "--json"];
+    let direct = raw(home, &args);
+    assert_eq!(
+        direct.code, 1,
+        "raw drops the second record: {}",
+        direct.stdout
+    );
+    let indexed = run(home, &args);
+    assert_eq!(indexed.code, 1, "{}", indexed.stdout);
+    // The first record alone still matches on its own term.
+    assert_eq!(run(home, &["find", "alpha", "--in", "prompts"]).code, 0);
+    assert_eq!(run(home, &["find", "beta", "--in", "prompts"]).code, 1);
+}
+
+/// A `docs` table with fewer rows than the file's stored event count cannot be
+/// trusted: the find falls back to the transcript instead of scoring a part.
+#[test]
+fn missing_docs_rows_fall_back_to_the_transcript() {
+    let t = store();
+    let home = t.path();
+    let path = home.join(format!(".claude/projects/w/{C2}.jsonl"));
+    assert_eq!(run(home, &["index"]).code, 0);
+    let args = ["find", "alpha", "beta", "--in", "prompts", "--json"];
+    let want = matches_only(&raw(home, &args).stdout);
+    assert!(want.iter().any(|r| r["id"] == C2));
+    // Lose the docs row holding `alpha` while the file is unchanged and current.
+    let n = db(home)
+        .execute(
+            &format!("DELETE FROM docs WHERE {BY_NAME} AND event LIKE '%alpha comes first%'"),
+            [name(&path)],
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    let indexed = run(home, &args);
+    assert!(
+        indexed.stderr.contains("6 indexed, 0 refreshed now"),
+        "{}",
+        indexed.stderr
+    );
+    assert_eq!(matches_only(&indexed.stdout), want);
+}
+
+#[test]
+fn a_half_rebuilt_v3_index_is_rebuilt_not_left_broken() {
+    // An interrupted rebuild could leave current `docs` beside an old `files`
+    // without `n_events`; every later run then failed (review round 2 of #1315).
+    let t = store();
+    let home = t.path();
+    let cache = home.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let db = rusqlite::Connection::open(cache.join("find-index-v3.sqlite")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE files(path TEXT PRIMARY KEY, harness TEXT NOT NULL, size INTEGER NOT NULL,
+             mtime_ns INTEGER NOT NULL, offset INTEGER NOT NULL, mode TEXT NOT NULL,
+             tail_hash TEXT NOT NULL);
+         CREATE TABLE docs(id INTEGER PRIMARY KEY, path TEXT NOT NULL, ord INTEGER NOT NULL,
+             event TEXT NOT NULL, rec INTEGER NOT NULL, uuid TEXT NOT NULL);",
+    )
+    .unwrap();
+    drop(db);
+    for _ in 0..2 {
+        let out = run(home, &["index"]);
+        assert_eq!(out.code, 0, "{}", out.stderr);
+    }
+    let args = ["find", "alpha", "--in", "prompts", "--json"];
+    assert_eq!(
+        matches_only(&run(home, &args).stdout),
+        matches_only(&raw(home, &args).stdout)
+    );
 }

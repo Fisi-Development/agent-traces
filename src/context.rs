@@ -19,6 +19,9 @@ pub struct Context {
     pub skipped: Cell<usize>,
     /// How the last prefilter used the find index, for the `searched:` footer.
     pub index_summary: RefCell<Option<String>>,
+    /// The find index and the transcripts it answered in the last prefilter,
+    /// so `search_candidates` can score them without reading the transcripts.
+    pub index_docs: RefCell<Option<crate::index::Served>>,
     pub known_sessions: RefCell<Vec<Value>>,
     known_keys: RefCell<HashSet<(String, String, String)>>,
     pub(crate) known_by_id: RefCell<HashMap<String, Vec<usize>>>,
@@ -63,6 +66,7 @@ impl Context {
             coverage: RefCell::new(vec![]),
             skipped: Cell::new(0),
             index_summary: RefCell::new(None),
+            index_docs: RefCell::new(None),
             known_sessions: RefCell::new(vec![]),
             known_keys: RefCell::new(HashSet::new()),
             known_by_id: RefCell::new(HashMap::new()),

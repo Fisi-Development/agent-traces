@@ -226,7 +226,7 @@ including those past `--limit`. The summary line goes to stderr.
 From 0.3.0, `find` over the default `--in prompts` scope and `--in assistant`
 answers from a SQLite full-text index instead of reading every Claude, Codex and
 Grok transcript. The index holds one row per prompt, command and assistant event
-(lowercased, FTS5 trigram tokenizer, `find-index-v2.sqlite` in the cache
+(lowercased, FTS5 trigram tokenizer, `find-index-v3.sqlite` in the cache
 directory, `~/.cache/agent-traces` unless `AGENT_TRACES_CACHE` says otherwise)
 and is this tool's own file, never a session store. Each `find` first checks the
 size and modification time of every transcript it would search, reads only the
@@ -246,14 +246,23 @@ budget and scans the rest raw; run `agent-traces index` once, or on a schedule,
 to index everything ahead of time. It prints the files already indexed, those
 refreshed, the event count, the seconds taken and the index size on disk.
 `index` takes the session filters of `ls` (`--harness`, `--subagents`, `--cwd`,
-`--since`, `--until`). Deleting `find-index-v2.sqlite` is always safe: it is
+`--since`, `--until`). Deleting `find-index-v3.sqlite` is always safe: it is
 rebuilt on demand.
 
-BM25 scores are computed over the candidate sessions' events, and the index
-selects exactly the sessions whose in-scope events hold every term, where the raw
-scan also keeps sessions that hold the terms only in tool output or metadata. A
-score can therefore shift slightly between the two paths; the matching sessions
-and their hits do not.
+From 0.4.0 the index also stores each event as the adapter produced it, so a
+`find` scores the transcripts it holds current from the index and reads none of
+them. BM25 corpus statistics then cover every in-scope event of those sessions,
+where the raw scan counts only lines that hold a term plus a count of the rest, so
+`_score` and the order of close results can differ between the two paths. For
+terms that are all ASCII the matching sessions and the set of hits per session do
+not differ, apart from the repeated-uuid case below. Hits are ordered by BM25, so their order, and where `--hits N`
+truncates, can differ: the same session may show a different N hits.
+
+Indexed finds fold case with Unicode lowercasing. The raw scan (no index, over the
+refresh budget, `AGENT_TRACES_NO_INDEX=1`) folds ASCII only, so a non-ASCII case
+variant (`ÄRGER` for `ärger`) can match only through the index. Claude records that repeat a uuid are deduplicated in both paths, keeping the first, but not identically: the raw scan drops lines without a term before it checks uuids, so which record claims a uuid depends on the query, and the index keeps the first stored record whatever the query. The two differ only when records sharing a uuid differ in content or kind (text, or `isMeta` and other records the index does not store); copies from a resumed session are identical.  Likewise the raw scan tests the JSON line, so a
+term holding a double quote or backslash (escaped there) also matches only through
+the index.
 
 Legacy `ls --json`, `find --json`, `resolve --json`, and `usage --json` emit JSON Lines. A
 `find --json` line is the session row plus `_score` and `hits` (each `ts`,

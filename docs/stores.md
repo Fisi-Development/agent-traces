@@ -69,7 +69,7 @@ Surveyed 2026-09-23 on the author's machines; the counts and dates below come fr
 
 ## Find index
 
-`find` over the `prompts` and `assistant` scopes reads `find-index-v2.sqlite` in
+`find` over the `prompts` and `assistant` scopes reads `find-index-v3.sqlite` in
 the cache directory (`AGENT_TRACES_CACHE`, default `~/.cache/agent-traces`)
 instead of Claude, Codex and Grok transcripts. It is the tool's own file, safe to
 delete. Table `files` records each transcript's path, harness, size, mtime in
@@ -81,14 +81,35 @@ offset if the file grew and the bytes ending at the offset still hash to
 file's rows are dropped and it is reindexed from byte 0, as is a compressed
 (`.zst`) rollout, which is always `full`. An edit before the last 4 KB together
 with growth goes undetected; transcripts are append-only. Every refresh also
-drops the rows of stored transcripts whose file no longer exists. The 0.3.0
-database `find-index-v1.sqlite` has no `tail_hash`; it is deleted on open. Table `events` is an FTS5 table with the
+drops the rows of stored transcripts whose file no longer exists. Earlier
+databases are deleted on open: `find-index-v1.sqlite` has no `tail_hash`,
+`find-index-v2.sqlite` no `docs`. Table `events` is an FTS5 table with the
 `trigram` tokenizer storing `body` (the lowercased event text), `path` and `role`
 for `prompt`, `command` and `assistant` events. Every adapter turns a record into
 events without carrying state across lines, so a tail parsed from an offset equals
 the tail of a full parse; Claude's uuid dedup only removes duplicates and the
 index keeps them, which a superset prefilter tolerates. Terms of three or more
 characters match through the trigram index and shorter ones through `instr`.
+Table `docs` (`id` equal to the `events` rowid, `path`, `ord` in file order,
+`event` as the JSON of the adapter's event) is written and deleted in the same
+transaction as `events`. A find scores a transcript the index holds current from
+`docs`, without reading it, so corpus statistics cover every in-scope event.
+`docs` also holds each row's `rec` (byte offset of its record) and `uuid`
+(Claude only): reading a path keeps a row only if its uuid is empty or its `rec`
+is the first one seen for that uuid, as the Claude adapter drops later records
+with a seen uuid. `files.n_events` counts the stored events. The find falls back
+to the transcript when the file's size or mtime differ from the stored ones, when
+the `docs` rows read differ from `n_events`, or on any SQLite error. Hits are
+ordered by BM25, so with the changed corpus statistics their order and the
+`--hits N` cut can differ from the raw scan's; the set of hits does not, apart from the repeated-uuid case below. Case folding in the
+index is Unicode lowercasing; the raw scan folds ASCII only (`src/storage/jsonl.rs`),
+so a non-ASCII case variant matches only through the index.
+Claude records that repeat a uuid are deduplicated in both paths, keeping the first, but
+not identically: the raw scan drops lines without a term before it checks uuids, so
+which record claims a uuid depends on the query, and the index keeps the first stored
+record whatever the query. The two differ only when records sharing a uuid differ in
+content or kind (text, or `isMeta` and other records the index does not store);
+copies from a resumed session are identical.
 
 ## Session usage
 

@@ -430,17 +430,27 @@ pub fn search_candidates(
     for row in candidates {
         let ad = crate::core::adapter(s(&row, "harness"))?;
         let first = one_line(s(&row, "first_prompt"), 80).to_lowercase();
-        let events = match ad.events(ctx, &row, Some(&lows)) {
-            Ok(e) => e,
-            Err(e) => {
-                ctx.diagnostic(
-                    "store_unreadable",
-                    Some(s(&row, "harness")),
-                    None,
-                    e.to_string(),
-                );
-                continue;
-            }
+        // A transcript the index answered in this query is scored from its stored
+        // events: nothing is read or parsed, and nothing counts as skipped.
+        let served = ctx
+            .index_docs
+            .borrow()
+            .as_ref()
+            .and_then(|d| d.events(ctx, s(&row, "path")));
+        let events: Box<dyn Iterator<Item = crate::model::Event>> = match served {
+            Some(events) => Box::new(events.into_iter()),
+            None => match ad.events(ctx, &row, Some(&lows)) {
+                Ok(e) => e,
+                Err(e) => {
+                    ctx.diagnostic(
+                        "store_unreadable",
+                        Some(s(&row, "harness")),
+                        None,
+                        e.to_string(),
+                    );
+                    continue;
+                }
+            },
         };
         let mut docs = Vec::new();
         let mut covered = HashSet::new();
