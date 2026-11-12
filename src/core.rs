@@ -54,16 +54,28 @@ pub fn adapter(name: &str) -> Result<Box<dyn StoreAdapter>> {
 pub fn merge_t3(rows: Vec<Session>) -> Vec<Session> {
     let (mut others, t3): (Vec<_>, Vec<_>) =
         rows.into_iter().partition(|r| s(r, "harness") != "t3");
+    // (harness, id) -> last index in `others`, the row `.rev().find` picked.
+    // Unmatched T3 rows are pushed into `others` and stay candidates for later
+    // rows, so they are added to the map too (later rows win, as with `.rev()`).
+    let mut index: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::with_capacity(others.len());
+    for (i, p) in others.iter().enumerate() {
+        index.insert((s(p, "harness").to_owned(), s(p, "id").to_owned()), i);
+    }
     for r in t3 {
-        if let Some(target) = others
-            .iter_mut()
-            .rev()
-            .find(|p| s(p, "harness") == s(&r, "provider") && s(p, "id") == s(&r, "provider_id"))
-        {
+        let key = (
+            s(&r, "provider").to_owned(),
+            s(&r, "provider_id").to_owned(),
+        );
+        if let Some(target) = index.get(&key).map(|&i| &mut others[i]) {
             target["t3_thread"] = r["id"].clone();
             target["t3_title"] = r["title"].clone();
             target["provider_instance"] = r["provider_instance"].clone();
         } else {
+            index.insert(
+                (s(&r, "harness").to_owned(), s(&r, "id").to_owned()),
+                others.len(),
+            );
             others.push(r);
         }
     }
@@ -461,7 +473,7 @@ pub fn ls_keep(row: &Session, terms: &[String], t3_only: bool) -> bool {
     }
 }
 pub fn sorted_recent(rows: &mut [Session]) {
-    rows.sort_by_key(|r| {
+    rows.sort_by_cached_key(|r| {
         std::cmp::Reverse(parse_ts(&r["updated"]).or_else(|| parse_ts(&r["started"])))
     });
 }
@@ -777,5 +789,63 @@ mod safety_tests {
                 .to_string_lossy()
                 .starts_with(".agent-traces-")
         }));
+    }
+}
+#[cfg(test)]
+mod merge_t3_tests {
+    use super::*;
+    use serde_json::json;
+    fn t3(id: &str, provider: &str, provider_id: &str) -> Session {
+        json!({"harness":"t3","id":id,"title":id,"provider":provider,
+            "provider_id":provider_id,"provider_instance":format!("inst-{id}")})
+    }
+    #[test]
+    fn the_last_matching_row_takes_the_t3_thread() {
+        let rows = vec![
+            json!({"harness":"claude","id":"a","home":"first"}),
+            json!({"harness":"claude","id":"a","home":"second"}),
+            json!({"harness":"codex","id":"a","home":"other"}),
+            t3("thread-1", "claude", "a"),
+        ];
+        let out = merge_t3(rows);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].get("t3_thread").is_none());
+        assert_eq!(out[1]["t3_thread"], "thread-1");
+        assert_eq!(out[1]["t3_title"], "thread-1");
+        assert_eq!(out[1]["provider_instance"], "inst-thread-1");
+        assert!(out[2].get("t3_thread").is_none());
+    }
+    #[test]
+    fn unmatched_t3_rows_stay_whole_and_in_order() {
+        let rows = vec![
+            t3("x", "claude", "nope"),
+            json!({"harness":"claude","id":"a"}),
+            t3("y", "codex", "a"),
+        ];
+        let out = merge_t3(rows);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0]["id"], "a");
+        assert!(out[0].get("t3_thread").is_none());
+        assert_eq!(out[1]["id"], "x");
+        assert_eq!(out[2]["id"], "y");
+    }
+    #[test]
+    fn a_kept_t3_row_is_a_candidate_for_a_later_t3_row() {
+        // Unmatched rows join `others`; a later row naming provider "t3" binds
+        // to the last of them, not the first.
+        let rows = vec![
+            t3("u1", "claude", "none"),
+            t3("u2", "claude", "none2"),
+            t3("late", "t3", "u1"),
+        ];
+        let mut dup = rows.clone();
+        dup.insert(1, t3("u1", "claude", "none3"));
+        let out = merge_t3(rows);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["t3_thread"], "late");
+        let out = merge_t3(dup);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].get("t3_thread").is_none());
+        assert_eq!(out[1]["t3_thread"], "late");
     }
 }

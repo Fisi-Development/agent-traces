@@ -224,7 +224,8 @@ impl T3 {
     fn query_v2(ctx: &Context, con: &rusqlite::Connection) -> Result<Vec<Session>> {
         let path = Self::path_v2(ctx);
         let rows = db::query(con, "
-            select t.*, p.workspace_root,
+            select t.thread_id, t.title, t.created_at, t.updated_at, t.archived_at,
+              t.provider_instance_id, t.payload_json, p.workspace_root,
               (select max(created_at) from orchestration_v2_projection_messages
                where thread_id=t.thread_id and role='user') as latest_user_message_at,
               pt.driver, pt.payload_json as provider_payload,
