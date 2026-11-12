@@ -297,10 +297,19 @@ fn the_index_answers_what_the_raw_scan_answers() {
     );
 }
 
+/// Rows are keyed by the path the session listing reports, whose form can differ
+/// from the test's own (on Windows, `\` where the test joined with `/`), so the helpers
+/// match on the file name, unique in every fixture.
+const BY_NAME: &str = "substr(path, -length(?1) - 1) IN ('/' || ?1, '\\' || ?1)";
+
+fn name(path: &Path) -> String {
+    path.file_name().unwrap().to_str().unwrap().to_owned()
+}
+
 fn count(db: &rusqlite::Connection, path: &Path) -> i64 {
     db.query_row(
-        "SELECT count(*) FROM events WHERE path = ?1",
-        [path.to_str().unwrap()],
+        &format!("SELECT count(*) FROM events WHERE {BY_NAME}"),
+        [name(path)],
         |r| r.get(0),
     )
     .unwrap()
@@ -308,8 +317,8 @@ fn count(db: &rusqlite::Connection, path: &Path) -> i64 {
 
 fn offset(db: &rusqlite::Connection, path: &Path) -> i64 {
     db.query_row(
-        "SELECT offset FROM files WHERE path = ?1",
-        [path.to_str().unwrap()],
+        &format!("SELECT offset FROM files WHERE {BY_NAME}"),
+        [name(path)],
         |r| r.get(0),
     )
     .unwrap()
@@ -517,8 +526,8 @@ fn bump_mtime(path: &Path) {
 
 fn files_rows(db: &rusqlite::Connection, path: &Path) -> i64 {
     db.query_row(
-        "SELECT count(*) FROM files WHERE path = ?1",
-        [path.to_str().unwrap()],
+        &format!("SELECT count(*) FROM files WHERE {BY_NAME}"),
+        [name(path)],
         |r| r.get(0),
     )
     .unwrap()
