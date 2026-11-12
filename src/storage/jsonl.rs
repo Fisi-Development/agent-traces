@@ -132,12 +132,18 @@ pub fn records<'a>(
         }
     };
     let path = path.to_owned();
-    let needles = needles
-        .unwrap_or_default()
+    // An empty needle matches every line, as before; the rest are SIMD finders
+    // built once per file rather than a byte-window compare per line.
+    let needles = needles.unwrap_or_default();
+    let any_empty = needles.iter().any(|n| n.is_empty());
+    let finders = needles
         .iter()
-        .map(|n| n.as_bytes().to_vec())
+        .filter(|n| !n.is_empty())
+        .map(|n| memchr::memmem::Finder::new(n.as_bytes()).into_owned())
         .collect::<Vec<_>>();
+    let filtering = !needles.is_empty() && !any_empty;
     let mut raw = Vec::new();
+    let mut lower = Vec::new();
     let mut index = 0;
     let mut finished = false;
     Box::new(std::iter::from_fn(move || {
@@ -157,12 +163,11 @@ pub fn records<'a>(
             if i < start {
                 continue;
             }
-            if !needles.is_empty() {
-                let lower = raw.to_ascii_lowercase();
-                if !needles
-                    .iter()
-                    .any(|n| n.is_empty() || lower.windows(n.len()).any(|w| w == n))
-                {
+            if filtering {
+                // One reused buffer: ASCII-lowercase the line, then search it.
+                lower.clear();
+                lower.extend(raw.iter().map(u8::to_ascii_lowercase));
+                if !finders.iter().any(|f| f.find(&lower).is_some()) {
                     ctx.skipped.set(ctx.skipped.get() + 1);
                     continue;
                 }
@@ -266,6 +271,30 @@ mod tests {
         let v = records(&ctx, &p, 0, Some(&["needle".into()])).collect::<Vec<_>>();
         assert_eq!(v[0].0, 2);
         assert_eq!(ctx.skipped.get(), 2);
+    }
+    #[test]
+    fn needles_keep_lines_holding_any_of_them_case_folded() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("n.jsonl");
+        std::fs::write(
+            &p,
+            b"{\"s\":\"has ALPHA\"}\n{\"s\":\"none\"}\n{\"s\":\"beta here\"}\n{\"s\":\"al pha\"}\n",
+        )
+        .unwrap();
+        let ctx = Context::from_env();
+        let kept = |needles: &[String]| {
+            ctx.skipped.set(0);
+            let lines = records(&ctx, &p, 0, Some(needles))
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>();
+            (lines, ctx.skipped.get())
+        };
+        // Either needle keeps a line; the ASCII case of the line does not matter.
+        assert_eq!(kept(&["alpha".into(), "beta".into()]), (vec![0, 2], 2));
+        // A needle longer than a line, or absent everywhere, skips every line.
+        assert_eq!(kept(&["x".repeat(64)]), (vec![], 4));
+        // An empty needle keeps every line, as the raw scan always has.
+        assert_eq!(kept(&["".into(), "zzz".into()]), (vec![0, 1, 2, 3], 0));
     }
     #[test]
     fn an_unterminated_last_record_is_named_as_such() {
