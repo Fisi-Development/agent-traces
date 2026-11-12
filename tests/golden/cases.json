@@ -215,7 +215,7 @@
     "exit": 0,
     "expected": [
       {
-        "_score": 3.24,
+        "_score": 0.94,
         "agent_type": null,
         "branch": "fixture",
         "cwd": "<HOME>/project",
@@ -249,7 +249,7 @@
         "updated": "2026-09-25T10:00:00+00:00"
       },
       {
-        "_score": 2.86,
+        "_score": 0.71,
         "branch": null,
         "cwd": "<HOME>/project",
         "first_prompt": null,
@@ -277,7 +277,7 @@
         "updated": "2026-09-25T10:00:03+00:00"
       },
       {
-        "_score": 2.86,
+        "_score": 0.71,
         "archived": false,
         "branch": null,
         "cwd": "<HOME>/project",
@@ -305,7 +305,7 @@
         "updated": "2026-09-25T10:00:02.172000+00:00"
       },
       {
-        "_score": 1.41,
+        "_score": 0.5,
         "archived": false,
         "branch": "fixture",
         "cwd": "<HOME>/project",
@@ -354,7 +354,7 @@
     "exit": 0,
     "expected": [
       {
-        "_score": 5.94,
+        "_score": 1.33,
         "agent_type": null,
         "branch": "fixture",
         "cwd": "<HOME>/project",
@@ -388,7 +388,7 @@
         "updated": "2026-09-25T10:00:00+00:00"
       },
       {
-        "_score": 2.47,
+        "_score": 0.66,
         "archived": false,
         "branch": "fixture",
         "cwd": "<HOME>/project",
@@ -421,7 +421,7 @@
         "updated": "2026-09-25T10:00:01+00:00"
       },
       {
-        "_score": 3.75,
+        "_score": 0.84,
         "archived": false,
         "branch": null,
         "cwd": "<HOME>/project",
@@ -449,7 +449,7 @@
         "updated": "2026-09-25T10:00:02.172000+00:00"
       },
       {
-        "_score": 3.75,
+        "_score": 0.84,
         "branch": null,
         "cwd": "<HOME>/project",
         "first_prompt": null,
@@ -543,7 +543,7 @@
       "-1"
     ],
     "exit": 0,
-    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing  <score 3.2, match in title>\n      09-25 10:00 prompt    Repair mailbox routing for café FIX-42\n      (+3 more hits)\n2026-09-25 10:00  grok     ~/.grok            grok-fixture-555555\n    ~/project  Grok mailbox  <score 2.9, match in title>\n      (+2 more hits)\n2026-09-25 10:00  opencode ~/.local/share/opencode ses_fixture444444\n    ~/project  OpenCode mailbox  <score 2.9, match in title>\n      (+2 more hits)\n2026-09-25 10:00  codex    ~/.codex           bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  Home session  [t3=thread-second-fixture]  <score 1.4, match in first prompt>\n      (+2 more hits)\n",
+    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing  <score 0.9, match in title>\n      09-25 10:00 prompt    Repair mailbox routing for café FIX-42\n      (+3 more hits)\n2026-09-25 10:00  grok     ~/.grok            grok-fixture-555555\n    ~/project  Grok mailbox  <score 0.7, match in title>\n      (+2 more hits)\n2026-09-25 10:00  opencode ~/.local/share/opencode ses_fixture444444\n    ~/project  OpenCode mailbox  <score 0.7, match in title>\n      (+2 more hits)\n2026-09-25 10:00  codex    ~/.codex           bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  Home session  [t3=thread-second-fixture]  <score 0.5, match in first prompt>\n      (+2 more hits)\n",
     "id": "find mailbox --include-self --hits -1",
     "kind": "text"
   },
@@ -556,7 +556,7 @@
       "-100"
     ],
     "exit": 0,
-    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing  <score 3.2, match in title>\n      (+102 more hits)\n2026-09-25 10:00  grok     ~/.grok            grok-fixture-555555\n    ~/project  Grok mailbox  <score 2.9, match in title>\n      (+101 more hits)\n2026-09-25 10:00  opencode ~/.local/share/opencode ses_fixture444444\n    ~/project  OpenCode mailbox  <score 2.9, match in title>\n      (+101 more hits)\n2026-09-25 10:00  codex    ~/.codex           bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  Home session  [t3=thread-second-fixture]  <score 1.4, match in first prompt>\n      (+101 more hits)\n",
+    "expected": "2026-09-25 10:00  claude   ~/.claude          aaaaaaaa-1111-4111-8111-111111111111\n    ~/project  Mailbox routing  <score 0.9, match in title>\n      (+102 more hits)\n2026-09-25 10:00  grok     ~/.grok            grok-fixture-555555\n    ~/project  Grok mailbox  <score 0.7, match in title>\n      (+101 more hits)\n2026-09-25 10:00  opencode ~/.local/share/opencode ses_fixture444444\n    ~/project  OpenCode mailbox  <score 0.7, match in title>\n      (+101 more hits)\n2026-09-25 10:00  codex    ~/.codex           bbbbbbbb-2222-4222-8222-222222222222\n    ~/project  Home session  [t3=thread-second-fixture]  <score 0.5, match in first prompt>\n      (+101 more hits)\n",
     "id": "find mailbox --include-self --hits -100",
     "kind": "text"
   },
