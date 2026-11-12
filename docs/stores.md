@@ -67,6 +67,29 @@ Surveyed 2026-09-23 on the author's machines; the counts and dates below come fr
 - **context-mode.** `<home>/context-mode/sessions/*.db` per harness home: `session_meta`, `session_events` (`user_prompt` in full, `turn_end.last_assistant_message` truncated, decisions, findings). Session ids equal the harness ids; shard filenames are not unique across homes. The Codex sidecar stopped writing on 2026-09-03.
 - **Empty or irrelevant.** Codex desktop app support dir (Chromium profile), Conductor (`session_messages` empty), CodexBar (quota only), Zed `threads.db` (empty), Warp (no local store).
 
+## Find index
+
+`find` over the `prompts` and `assistant` scopes reads `find-index-v2.sqlite` in
+the cache directory (`AGENT_TRACES_CACHE`, default `~/.cache/agent-traces`)
+instead of Claude, Codex and Grok transcripts. It is the tool's own file, safe to
+delete. Table `files` records each transcript's path, harness, size, mtime in
+nanoseconds, the byte offset after its last complete line, the SHA-256 of the
+up to 4,096 bytes ending at that offset (`tail_hash`), and a `mode`. When a
+file's size or mtime changed, `append` mode reads only the new lines from the
+offset if the file grew and the bytes ending at the offset still hash to
+`tail_hash`; otherwise (same size with a new mtime, shrunk, a changed tail) the
+file's rows are dropped and it is reindexed from byte 0, as is a compressed
+(`.zst`) rollout, which is always `full`. An edit before the last 4 KB together
+with growth goes undetected; transcripts are append-only. Every refresh also
+drops the rows of stored transcripts whose file no longer exists. The 0.3.0
+database `find-index-v1.sqlite` has no `tail_hash`; it is deleted on open. Table `events` is an FTS5 table with the
+`trigram` tokenizer storing `body` (the lowercased event text), `path` and `role`
+for `prompt`, `command` and `assistant` events. Every adapter turns a record into
+events without carrying state across lines, so a tail parsed from an offset equals
+the tail of a full parse; Claude's uuid dedup only removes duplicates and the
+index keeps them, which a superset prefilter tolerates. Terms of three or more
+characters match through the trigram index and shorter ones through `instr`.
+
 ## Session usage
 
 `usage ID...` reads full Claude and Codex transcripts and OpenCode token records without changing `ls` rows.

@@ -343,7 +343,8 @@
             "ambiguous_identity",
             "not_found",
             "internal_error",
-            "unsupported_storage_mode"
+            "unsupported_storage_mode",
+            "index_unavailable"
           ]
         },
         "severity": {
@@ -547,6 +548,10 @@
             "recent",
             "oldest"
           ]
+        },
+        "index": {
+          "type": "string",
+          "description": "How the find index served this query: counts of files indexed, refreshed now and scanned raw, off, or unavailable with a reason"
         },
         "score_algorithm": {
           "const": "agent-traces-python-bm25-v1"

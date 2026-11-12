@@ -255,7 +255,7 @@ pub fn envelope(ctx: &Context, command: &str, status: &str, result: Value) -> Va
     });
     coverage.dedup();
     let mut diagnostics:Vec<Value> = ctx.diagnostics.borrow().iter().map(|d| {
-        let code = if ["store_unreadable","store_busy","unsupported_store","malformed_record","process_unverifiable","invalid_argument","ambiguous_identity","not_found","internal_error","unsupported_storage_mode"].contains(&d.code.as_str()) {d.code.as_str()} else {"internal_error"};
+        let code = if ["store_unreadable","store_busy","unsupported_store","malformed_record","process_unverifiable","invalid_argument","ambiguous_identity","not_found","internal_error","unsupported_storage_mode","index_unavailable"].contains(&d.code.as_str()) {d.code.as_str()} else {"internal_error"};
         json!({"code":code,"severity":if ["info","warning","error"].contains(&d.severity.as_str()) {d.severity.as_str()} else {"warning"},
             "harness":d.harness,"store_id":d.store_id,"message":redact(&d.message),"retryable":d.retryable})
     }).collect();
@@ -268,6 +268,7 @@ pub fn envelope(ctx: &Context, command: &str, status: &str, result: Value) -> Va
                 "not_found",
                 "ambiguous_identity",
                 "invalid_argument",
+                "index_unavailable",
             ]
             .contains(&s(d, "code"))
         });

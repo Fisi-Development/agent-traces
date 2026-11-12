@@ -23,9 +23,20 @@ pub fn exists(path: &Path) -> bool {
     locate(path).exists()
 }
 
+/// File extensions `open` decompresses: the one list every caller asks.
+pub const COMPRESSED_EXTENSIONS: [&str; 1] = ["zst"];
+
+/// True when `path` itself (no `.zst` sibling lookup) names a compressed file.
+pub fn is_compressed(path: &Path) -> bool {
+    path.extension().is_some_and(|e| {
+        COMPRESSED_EXTENSIONS
+            .iter()
+            .any(|c| e.eq_ignore_ascii_case(c))
+    })
+}
+
 fn is_zst(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("zst"))
+    is_compressed(path)
 }
 
 type Frame = ruzstd::decoding::StreamingDecoder<BufReader<File>, ruzstd::decoding::FrameDecoder>;

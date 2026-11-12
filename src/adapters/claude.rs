@@ -586,7 +586,7 @@ impl StoreAdapter for Claude {
         Ok(homes.iter().map(|h|{let files=top_files(ctx, h);json!({"harness":"claude","path":ctx.tilde(h),"sessions":files.len(),"newest":files.iter().filter_map(|p|mtime(p)).max().map(iso),"index":"projects/<cwd-slug>/<session>.jsonl (no index; scan files)","notes":format!("history.jsonl is a typed-prompt log only (misses SDK/T3/subagent prompts){}",if shared>0{format!("; {shared} sessions exist as copies in more than one home (listed once)")}else{String::new()})})}).collect())
     }
 }
-fn record_events(r: &Value) -> Vec<Event> {
+pub(crate) fn record_events(r: &Value) -> Vec<Event> {
     let ts = parse_ts(&r["timestamp"]);
     let mut out = vec![];
     match s(r, "type") {

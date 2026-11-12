@@ -81,6 +81,11 @@ impl Common {
 #[derive(Subcommand)]
 enum Command {
     Where,
+    /// Bring the find index up to date for every claude, codex and grok session
+    Index {
+        #[command(flatten)]
+        common: Common,
+    },
     /// Inspect T3 orchestration metadata
     T3 {
         #[command(subcommand)]
@@ -297,6 +302,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Where => "where",
+            Self::Index { .. } => "index",
             Self::T3 { .. } => "t3",
             Self::Ls { .. } => "ls",
             Self::Find { .. } => "find",
@@ -450,6 +456,13 @@ fn limit_len(total: usize, limit: i64) -> usize {
     } else {
         total.min(limit as usize)
     }
+}
+/// How the last prefilter used the find index: counts, `off`, or `unavailable (reason)`.
+fn index_summary(ctx: &Context) -> String {
+    ctx.index_summary
+        .borrow()
+        .clone()
+        .unwrap_or_else(|| "off".into())
 }
 fn v1_output(ctx: &Context, command: &str, status: &str, result: Value) -> CommandOutput {
     let envelope = contract::envelope(ctx, command, status, result);
@@ -828,7 +841,7 @@ fn execute_with_writers(
                     ctx,
                     "find",
                     if result.total == 0 { "not_found" } else { "ok" },
-                    json!({"query_terms":terms,"scope":scope,"sort":sort,"score_algorithm":"agent-traces-python-bm25-v1","total":result.total,"limit":limit,"truncated":result.total>matches.len(),"matches":matches}),
+                    json!({"query_terms":terms,"scope":scope,"sort":sort,"score_algorithm":"agent-traces-python-bm25-v1","total":result.total,"limit":limit,"truncated":result.total>matches.len(),"index":index_summary(ctx),"matches":matches}),
                 ));
             }
             let mut out = if *count {
@@ -923,7 +936,7 @@ fn execute_with_writers(
                 }
             }
             let mut stderr = format!(
-                "\n{} matching sessions ({} shown); scope={scope}; sort={sort}; current session {}. searched: {}\n",
+                "\n{} matching sessions ({} shown); scope={scope}; sort={sort}; current session {}. searched: {}; index: {}\n",
                 result.total,
                 result.rows.len(),
                 if *include_self {
@@ -931,7 +944,8 @@ fn execute_with_writers(
                 } else {
                     "excluded"
                 },
-                core::scope_summary(ctx)
+                core::scope_summary(ctx),
+                index_summary(ctx)
             );
             if result.total == 0 {
                 stderr.push_str("no hits. Try --in all, fewer or shorter terms, --subagents, or check `where` for a store this tool does not adapt.\n");
@@ -1319,6 +1333,32 @@ fn execute_with_writers(
                 ..Default::default()
             })
         }
+        Command::Index { common } => {
+            let rows = core::gather(ctx, &common.filters(ctx, None)?)?;
+            let stats = agent_traces::index::build(ctx, &rows)?;
+            let line = if common.format.json {
+                json!({"indexed":stats.current,"refreshed":stats.refreshed,"gone":stats.gone,"unreadable":stats.failed,"events":stats.events,"seconds":stats.seconds,"index_bytes":stats.bytes}).to_string()
+            } else {
+                format!(
+                    "{} files already indexed, {} refreshed, {} gone, {} unreadable; {} events; {:.1} s; index {:.1} MB on disk\n",
+                    stats.current,
+                    stats.refreshed,
+                    stats.gone,
+                    stats.failed,
+                    stats.events,
+                    stats.seconds,
+                    stats.bytes as f64 / 1_048_576.0
+                )
+            };
+            Ok(CommandOutput {
+                stdout: if common.format.json {
+                    line + "\n"
+                } else {
+                    line
+                },
+                ..Default::default()
+            })
+        }
         Command::Where => {
             let mut out =
                 "Stores on this machine (newest = latest activity, local time):\n\n".to_owned();
@@ -1583,6 +1623,19 @@ mod tests {
         std::fs::create_dir_all(&store).unwrap();
         std::fs::write(store.join("aaaaaaaa-1111-4111-8111-111111111111.jsonl"),
             format!("{}\n", json!({"type":"user","cwd":"/test","timestamp":"2026-10-01T12:00:00Z","message":{"content":"pelican fixture"}}))).unwrap();
+        // Warm the find index, so every footer below reports the same index coverage.
+        let warm = Cli::parse_from([
+            "agent-traces",
+            "find",
+            "pelican",
+            "--harness",
+            "claude",
+            "--cwd",
+            "/test",
+        ])
+        .command
+        .unwrap();
+        execute_with_writers(&ctx, &warm, None, &mut Vec::new(), &mut Vec::new()).unwrap();
         for json_output in [false, true] {
             for queries in [["pelican", "absent-needle"], ["absent-one", "absent-two"]] {
                 let mut expected_out = String::new();

@@ -314,6 +314,20 @@ pub fn prefilter_candidates_multi(
             groups.push((h, vec![row]));
         }
     }
+    // The index answers the prompts and assistant scopes without reading transcripts;
+    // whatever it cannot vouch for in this query is scanned raw below.
+    let mut run = crate::index::Run::new(queries, scope);
+    let file_groups: Vec<(String, Vec<String>)> = groups
+        .iter()
+        .filter(|(h, _)| matches!(h.as_str(), "claude" | "codex" | "grok"))
+        .map(|(h, rs)| {
+            (
+                h.clone(),
+                rs.iter().map(|r| s(r, "path").to_owned()).collect(),
+            )
+        })
+        .collect();
+    run.prepare(ctx, &file_groups, queries);
     let mut memo = HashMap::new();
     for (h, rs) in groups {
         if matches!(h.as_str(), "claude" | "codex" | "grok") {
@@ -321,7 +335,13 @@ pub fn prefilter_candidates_multi(
             for row in rs {
                 let p = s(&row, "path");
                 let keep = memo.entry(p.to_owned()).or_insert_with(|| {
-                    let found = file_matches_multi(ctx, &h, &ctx.expand(p), &patterns);
+                    let found = match run.answer(p) {
+                        crate::index::Answer::Keep(keep) => Some(keep),
+                        crate::index::Answer::Gone => None,
+                        crate::index::Answer::Raw => {
+                            file_matches_multi(ctx, &h, &ctx.expand(p), &patterns)
+                        }
+                    };
                     missing += usize::from(found.is_none());
                     found
                 });
@@ -359,6 +379,7 @@ pub fn prefilter_candidates_multi(
             }
         }
     }
+    run.finish(ctx);
     Ok(candidates)
 }
 pub fn search(ctx: &Context, rows: Vec<Session>, options: &SearchOptions) -> Result<SearchResult> {
@@ -642,6 +663,48 @@ mod tests {
             vec!["one", "three", "two"]
         );
         assert_eq!(ctx.diagnostics.borrow().len(), 1);
+    }
+    #[test]
+    fn a_deleted_transcript_loses_its_index_rows_and_keeps_the_not_found_note() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = Context::from_env();
+        ctx.home = temp.path().to_path_buf();
+        ctx.cache_dir = temp.path().join("cache");
+        let path = temp.path().join(".claude/projects/test/gone.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "{\"type\":\"user\",\"message\":{\"content\":\"alpha prompt\"}}\n",
+        )
+        .unwrap();
+        let rows = vec![serde_json::json!({"harness":"claude","id":"gone","path":path})];
+        let scope = roles("prompts").unwrap();
+        let rows_in_index = || -> i64 {
+            rusqlite::Connection::open(ctx.cache_dir.join(crate::index::FILE_NAME))
+                .unwrap()
+                .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+                .unwrap()
+        };
+        let kept = prefilter_candidates(&ctx, rows.clone(), &["alpha".into()], scope).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(rows_in_index(), 1);
+        assert_eq!(
+            ctx.index_summary.borrow().as_deref(),
+            Some("0 indexed, 1 refreshed now, 0 scanned raw")
+        );
+        std::fs::remove_file(&path).unwrap();
+        let kept = prefilter_candidates(&ctx, rows, &["alpha".into()], scope).unwrap();
+        assert!(kept.is_empty());
+        assert_eq!(rows_in_index(), 0);
+        let diagnostics = ctx.diagnostics.borrow();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            (
+                diagnostics[0].code.as_str(),
+                diagnostics[0].severity.as_str()
+            ),
+            ("not_found", "info")
+        );
     }
     #[test]
     fn content_search_reaches_a_compressed_rollout() {

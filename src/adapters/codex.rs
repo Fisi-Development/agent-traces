@@ -368,7 +368,7 @@ impl StoreAdapter for Codex {
         Ok(out)
     }
 }
-fn codex_event(rec: &Value) -> Option<Event> {
+pub(crate) fn codex_event(rec: &Value) -> Option<Event> {
     let ts = parse_ts(&rec["timestamp"]);
     let p = &rec["payload"];
     match s(rec, "type") {

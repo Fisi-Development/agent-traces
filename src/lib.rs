@@ -3,6 +3,7 @@ pub mod context;
 pub mod contract;
 pub mod core;
 pub mod evidence;
+pub mod index;
 pub mod model;
 pub mod search;
 pub mod storage;

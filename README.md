@@ -142,6 +142,7 @@ on missing required schema. Omit `--json` for pretty JSON.
 | `where` | Locate stores and describe coverage |
 | `ls` | List, filter, project, or count sessions by date, harness, cwd, and keyword |
 | `find QUERY` | Rank matching sessions with BM25 |
+| `index` | Bring the `find` index up to date for every Claude, Codex and Grok session, with no time budget |
 | `t3 snapshot --json` | Read all undeleted local threads, latest run state and unique pending request kinds |
 | `t3 summary THREAD --json` | Read the latest user/assistant text for an exact full thread id, redacted and capped at 500 Unicode characters |
 | `t3 threads [filters]` | List thread metadata or group counts with `--count-by` |
@@ -221,6 +222,38 @@ OpenCode calls have a null key and cost, and standard speed.
 address per matching session, best first, in the same form as `ls --fields
 address`, which `show` and `resolve` take back; `--count` prints only the number of matching sessions,
 including those past `--limit`. The summary line goes to stderr.
+
+From 0.3.0, `find` over the default `--in prompts` scope and `--in assistant`
+answers from a SQLite full-text index instead of reading every Claude, Codex and
+Grok transcript. The index holds one row per prompt, command and assistant event
+(lowercased, FTS5 trigram tokenizer, `find-index-v2.sqlite` in the cache
+directory, `~/.cache/agent-traces` unless `AGENT_TRACES_CACHE` says otherwise)
+and is this tool's own file, never a session store. Each `find` first checks the
+size and modification time of every transcript it would search, reads only the
+new complete lines of a transcript that grew with its indexed tail intact, and
+reindexes one that shrank, was rewritten in place or is compressed. It also drops
+the rows of transcripts deleted from disk. A
+query spends at most 8 seconds refreshing files; any transcript still out of date
+after that is scanned raw in the same query, so the answer is the same and only
+slower. `--in tools`, `--in results`, `--in all` and `AGENT_TRACES_NO_INDEX=1`
+scan raw transcripts as before. T3 and OpenCode keep their own SQL prefilter.
+If the index cannot be opened or written (a locked, corrupt or read-only cache),
+the query scans raw and reports an info diagnostic `index_unavailable`.
+The `searched:` footer ends with `index: N indexed, M refreshed now, K scanned
+raw` (or `off`, or `unavailable (reason)`), and versioned `find --json` carries the
+same text as `result.index`. The first `find` after install indexes within its
+budget and scans the rest raw; run `agent-traces index` once, or on a schedule,
+to index everything ahead of time. It prints the files already indexed, those
+refreshed, the event count, the seconds taken and the index size on disk.
+`index` takes the session filters of `ls` (`--harness`, `--subagents`, `--cwd`,
+`--since`, `--until`). Deleting `find-index-v2.sqlite` is always safe: it is
+rebuilt on demand.
+
+BM25 scores are computed over the candidate sessions' events, and the index
+selects exactly the sessions whose in-scope events hold every term, where the raw
+scan also keeps sessions that hold the terms only in tool output or metadata. A
+score can therefore shift slightly between the two paths; the matching sessions
+and their hits do not.
 
 Legacy `ls --json`, `find --json`, `resolve --json`, and `usage --json` emit JSON Lines. A
 `find --json` line is the session row plus `_score` and `hits` (each `ts`,

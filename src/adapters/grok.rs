@@ -101,7 +101,7 @@ fn row(ctx: &Context, dir: &Path) -> Value {
         .to_string_lossy();
     json!({"harness":"grok","home":ctx.tilde(&ctx.home.join(".grok")),"id":dir.file_name().unwrap_or_default().to_string_lossy(),"parent":null,"kind":"main","cwd":if truthy(&v["info"]["cwd"]){v["info"]["cwd"].clone()}else{json!(percent_encoding::percent_decode_str(&fallback_cwd).decode_utf8_lossy())},"branch":v["head_branch"],"title":title,"first_prompt":first,"started":if truthy(&v["created_at"]){v["created_at"].clone()}else{mt.clone()},"updated":if truthy(&v["last_active_at"]){v["last_active_at"].clone()}else if truthy(&v["updated_at"]){v["updated_at"].clone()}else{mt},"model":v["current_model_id"],"path":history.to_string_lossy(),"originator":if s(&v,"request_id").starts_with("t3-"){Some("t3")}else{None}})
 }
-fn event_records(r: &Value) -> Vec<Event> {
+pub(crate) fn event_records(r: &Value) -> Vec<Event> {
     let ts = parse_ts(if truthy(&r["timestamp"]) {
         &r["timestamp"]
     } else {

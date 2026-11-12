@@ -1,6 +1,6 @@
 [package]
 name = "agent-traces"
-version = "0.2.39"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.93"
 description = "Read-only cross-harness coding-agent session discovery"
@@ -19,6 +19,7 @@ regex = "1"
 walkdir = "2"
 percent-encoding = "2"
 ruzstd = "0.9"
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Time"] }
