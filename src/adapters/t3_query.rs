@@ -63,6 +63,90 @@ pub struct EventsArgs {
     pub json: bool,
 }
 
+#[derive(Args)]
+pub struct TasksArgs {
+    pub ids: Vec<String>,
+    #[arg(long)]
+    pub status: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub fn tasks(ctx: &Context, opts: &TasksArgs) -> Result<Value> {
+    let con = T3::open_v2(ctx)?.ok_or_else(|| anyhow::anyhow!("T3 v2 store not found"))?;
+    con.execute_batch("BEGIN")?;
+    anyhow::ensure!(
+        db::table_exists(&con, "orchestration_v2_projection_subagents")?,
+        "T3 v2 subagent table not found"
+    );
+    let mut sql = "select subagent_id,thread_id,run_id,child_thread_id,provider,status,
+        completion_delivery_state,started_at,completed_at,updated_at
+        from orchestration_v2_projection_subagents"
+        .to_owned();
+    let mut args = vec![];
+    if let Some(status) = &opts.status {
+        sql.push_str(" where status=?");
+        args.push(json!(status));
+    }
+    if opts.ids.is_empty() {
+        sql.push_str(" order by julianday(updated_at) desc,subagent_id limit ?");
+        args.push(json!(opts.limit));
+        return Ok(json!({"tasks":db::query(&con, &sql, &args)?}));
+    }
+    let rows = db::query(&con, &sql, &args)?;
+    let mut selected = Vec::with_capacity(opts.ids.len());
+    for term in &opts.ids {
+        let matches: Vec<&Value> = rows
+            .iter()
+            .filter(|row| {
+                ["subagent_id", "child_thread_id"].iter().any(|field| {
+                    let id = s(row, field);
+                    id.contains(term)
+                        || percent_encoding::percent_decode_str(id)
+                            .decode_utf8_lossy()
+                            .contains(term)
+                })
+            })
+            .collect();
+        let exact: Vec<&Value> = matches
+            .iter()
+            .copied()
+            .filter(|row| {
+                ["subagent_id", "child_thread_id"].iter().any(|field| {
+                    let id = s(row, field);
+                    let decoded = percent_encoding::percent_decode_str(id).decode_utf8_lossy();
+                    // The delegate id T3 tools print: decoded, without the
+                    // `node:`/`thread:` and `delegated-task:` prefixes.
+                    let bare = ["node:", "thread:"]
+                        .iter()
+                        .find_map(|p| decoded.strip_prefix(p))
+                        .map(|rest| rest.strip_prefix("delegated-task:").unwrap_or(rest));
+                    id == term || decoded == term.as_str() || bare == Some(term.as_str())
+                })
+            })
+            .collect();
+        let row = if exact.len() == 1 {
+            exact[0]
+        } else {
+            anyhow::ensure!(!matches.is_empty(), "no T3 task matches {term:?}");
+            anyhow::ensure!(
+                matches.len() == 1,
+                "ambiguous T3 task {term:?}: {} matches; give more of its id",
+                matches.len()
+            );
+            matches[0]
+        };
+        selected.push(row.clone());
+    }
+    if opts.ids.len() == 1 {
+        Ok(selected.pop().unwrap())
+    } else {
+        Ok(json!({"tasks":selected}))
+    }
+}
+
 fn count_object(key: &str, mut counts: Vec<Value>) -> Value {
     counts.sort_by(|a, b| {
         b["count"]

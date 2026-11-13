@@ -137,6 +137,13 @@ truncating. An existing thread without messages has empty text; unknown or
 deleted threads fail. Both commands read only the local T3 v2 store and fail
 on missing required schema. Omit `--json` for pretty JSON.
 
+`t3 tasks` lists delegated tasks newest first, up to `--limit 20` by default.
+Pass one or more full ids or fragments to look up tasks in argument order.
+Fragments match raw and percent-decoded subagent and child thread ids; an exact
+id wins over other partial matches, while ambiguous or missing ids fail.
+`--status` filters both listings and lookups; `--limit` applies to the listing only. Output includes task status,
+timestamps, parent thread and child thread, but never the task payload.
+
 | Command | Purpose |
 | --- | --- |
 | `where` | Locate stores and describe coverage |
@@ -147,6 +154,7 @@ on missing required schema. Omit `--json` for pretty JSON.
 | `t3 summary THREAD --json` | Read the latest user/assistant text for an exact full thread id, redacted and capped at 500 Unicode characters |
 | `t3 threads [filters]` | List thread metadata or group counts with `--count-by` |
 | `t3 events [filters]` | Read orchestration events or group counts with `--count-by` |
+| `t3 tasks [ID ...] [--status S] [--limit N] [--json]` | List delegated tasks or look them up by raw, decoded, or partial id |
 | `t3 state THREAD [THREAD ...] [--fields a,b.c]` | Read T3 v2 branch, worktree, updated_at, latest run and checkpoint metadata |
 | `touched PATH` | Locate recorded file edits |
 | `commit REV` | Report local session evidence for a git commit |

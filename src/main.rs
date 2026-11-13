@@ -277,6 +277,8 @@ enum T3Command {
     Threads(agent_traces::adapters::t3_query::ThreadsArgs),
     /// Read or count local orchestration events
     Events(agent_traces::adapters::t3_query::EventsArgs),
+    /// List or look up local delegated tasks
+    Tasks(agent_traces::adapters::t3_query::TasksArgs),
     /// Read all local T3 threads and pending request kinds
     Snapshot {
         #[arg(long)]
@@ -556,6 +558,39 @@ fn execute_with_writers(
             let (value, json) = match command {
                 T3Command::Threads(opts) => (t3_query::threads(ctx, opts)?, opts.json),
                 T3Command::Events(opts) => (t3_query::events(ctx, opts)?, opts.json),
+                T3Command::Tasks(opts) => {
+                    let value = t3_query::tasks(ctx, opts)?;
+                    if !opts.json {
+                        let rows = if opts.ids.len() == 1 {
+                            std::slice::from_ref(&value)
+                        } else {
+                            value["tasks"].as_array().unwrap().as_slice()
+                        };
+                        let text = rows
+                            .iter()
+                            .map(|task| {
+                                let child = if task["child_thread_id"].is_null() {
+                                    "-".to_owned()
+                                } else {
+                                    cell(&task["child_thread_id"])
+                                };
+                                format!(
+                                    "{}\t{}\t{}\t{}\t{}\n",
+                                    cell(&task["status"]),
+                                    cell(&task["updated_at"]),
+                                    cell(&task["subagent_id"]),
+                                    child,
+                                    cell(&task["thread_id"])
+                                )
+                            })
+                            .collect::<String>();
+                        return Ok(CommandOutput {
+                            stdout: redact(&text),
+                            ..Default::default()
+                        });
+                    }
+                    (value, true)
+                }
                 T3Command::Snapshot { json } => (T3::snapshot(ctx)?, *json),
                 T3Command::Summary { thread_id, json } => (T3::summary(ctx, thread_id)?, *json),
                 T3Command::State {
