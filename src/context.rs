@@ -15,6 +15,7 @@ pub struct Context {
     pub host_id: Option<String>,
     pub self_ids: HashSet<String>,
     pub diagnostics: RefCell<Vec<Diagnostic>>,
+    malformed_records: RefCell<HashSet<(PathBuf, u64)>>,
     pub coverage: RefCell<Vec<Coverage>>,
     pub skipped: Cell<usize>,
     /// How the last prefilter used the find index, for the `searched:` footer.
@@ -63,6 +64,7 @@ impl Context {
             .filter(|s| !s.is_empty())
             .collect(),
             diagnostics: RefCell::new(vec![]),
+            malformed_records: RefCell::new(HashSet::new()),
             coverage: RefCell::new(vec![]),
             skipped: Cell::new(0),
             index_summary: RefCell::new(None),
@@ -115,6 +117,22 @@ impl Context {
             if !source.is_empty() {
                 self.protect_source(&self.expand(source));
             }
+        }
+    }
+    pub fn malformed_record(
+        &self,
+        harness: Option<&str>,
+        path: &Path,
+        offset: u64,
+        message: impl Into<String>,
+    ) {
+        let real = crate::storage::jsonl::locate(path);
+        let real = real
+            .canonicalize()
+            .or_else(|_| std::path::absolute(&real))
+            .unwrap_or(real);
+        if self.malformed_records.borrow_mut().insert((real, offset)) {
+            self.diagnostic("malformed_record", harness, Some(path), message);
         }
     }
     pub fn diagnostic(

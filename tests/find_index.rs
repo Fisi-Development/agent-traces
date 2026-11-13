@@ -33,6 +33,7 @@ fn run_with(home: &Path, cache: &Path, args: &[&str], env: &[(&str, &str)]) -> O
         .env("AGENT_TRACES_CACHE", cache)
         .env("AGENT_TRACES_OUT", home.join("out"))
         .env("AGENT_TRACES_HOST", "testhost")
+        .env("AGENT_TRACES_HOST_ID", "testhost")
         .env("TZ", "UTC")
         .envs(env.iter().copied())
         .output()
@@ -433,7 +434,7 @@ fn offset(db: &rusqlite::Connection, path: &Path) -> i64 {
 }
 
 fn db(home: &Path) -> rusqlite::Connection {
-    rusqlite::Connection::open(home.join("cache/find-index-v3.sqlite")).unwrap()
+    rusqlite::Connection::open(home.join("cache/find-index-v4.sqlite")).unwrap()
 }
 
 #[test]
@@ -579,7 +580,7 @@ fn a_corrupt_index_falls_back_to_the_raw_scan() {
     let home = t.path();
     fs::create_dir_all(home.join("cache")).unwrap();
     fs::write(
-        home.join("cache/find-index-v3.sqlite"),
+        home.join("cache/find-index-v4.sqlite"),
         "this is not a database at all",
     )
     .unwrap();
@@ -802,12 +803,16 @@ fn a_same_size_rewrite_behind_a_partial_last_line_is_reindexed() {
 }
 
 #[test]
-fn the_old_schema_databases_are_removed_on_open() {
+fn older_schema_databases_are_preserved_on_open() {
     let t = store();
     let home = t.path();
     let cache = home.join("cache");
     fs::create_dir_all(&cache).unwrap();
-    let old = ["find-index-v1.sqlite", "find-index-v2.sqlite"];
+    let old = [
+        "find-index-v1.sqlite",
+        "find-index-v2.sqlite",
+        "find-index-v3.sqlite",
+    ];
     for name in old {
         for suffix in ["", "-wal", "-shm"] {
             fs::write(cache.join(format!("{name}{suffix}")), "old").unwrap();
@@ -817,12 +822,12 @@ fn the_old_schema_databases_are_removed_on_open() {
     for name in old {
         for suffix in ["", "-wal", "-shm"] {
             assert!(
-                !cache.join(format!("{name}{suffix}")).exists(),
+                fs::read(cache.join(format!("{name}{suffix}"))).unwrap() == b"old",
                 "{name}{suffix}"
             );
         }
     }
-    assert!(cache.join("find-index-v3.sqlite").exists());
+    assert!(cache.join("find-index-v4.sqlite").exists());
 }
 
 #[test]
@@ -1032,14 +1037,14 @@ fn missing_docs_rows_fall_back_to_the_transcript() {
 }
 
 #[test]
-fn a_half_rebuilt_v3_index_is_rebuilt_not_left_broken() {
+fn a_half_rebuilt_v4_index_is_rebuilt_not_left_broken() {
     // An interrupted rebuild could leave current `docs` beside an old `files`
     // without `n_events`; every later run then failed (review round 2 of #1315).
     let t = store();
     let home = t.path();
     let cache = home.join("cache");
     fs::create_dir_all(&cache).unwrap();
-    let db = rusqlite::Connection::open(cache.join("find-index-v3.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(cache.join("find-index-v4.sqlite")).unwrap();
     db.execute_batch(
         "CREATE TABLE files(path TEXT PRIMARY KEY, harness TEXT NOT NULL, size INTEGER NOT NULL,
              mtime_ns INTEGER NOT NULL, offset INTEGER NOT NULL, mode TEXT NOT NULL,
@@ -1058,4 +1063,328 @@ fn a_half_rebuilt_v3_index_is_rebuilt_not_left_broken() {
         matches_only(&run(home, &args).stdout),
         matches_only(&raw(home, &args).stdout)
     );
+}
+
+#[test]
+fn malformed_escapes_keep_neighbors_and_partial_coverage_across_searches() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    let path = claude(
+        home,
+        C1,
+        &[
+            user(0, "beforemarker"),
+            assistant(1, ""),
+            json!({"type":"custom-title","customTitle":"Synthetic search"}),
+        ],
+    );
+    let mut original = fs::read(&path).unwrap();
+    // A lone surrogate reproduces a serde diagnostic also seen for a truncated
+    // hex escape. Neither it nor an unknown escape may discard adjacent records.
+    for escape in [r"\ud83d", r"\u12", r"\q"] {
+        original.extend_from_slice(
+            format!(r#"{{"type":"user","message":{{"content":"lostmarker {escape}"}}}}"#)
+                .as_bytes(),
+        );
+        original.push(b'\n');
+    }
+    // Keep corruption outside metadata's initial probe and 256 KiB tail.
+    // Otherwise metadata warnings would conceal a silent find-index failure.
+    original.extend_from_slice(
+        lines(&[json!({"type":"system","content":"padding".repeat(50_000)})]).as_bytes(),
+    );
+    original.extend_from_slice(lines(&[user(2, "aftermarker")]).as_bytes());
+    fs::write(&path, &original).unwrap();
+
+    // Build first, then search twice: diagnostics must survive the cache and
+    // appear even for an absent term, where no candidate transcript is rendered.
+    let warm = run(home, &["index"]);
+    assert_eq!(warm.code, 0, "{}", warm.stderr);
+    assert!(warm.stderr.contains("search coverage is incomplete"));
+    assert_eq!(count(&db(home), &path), 2);
+    for indexed in [false, true, true] {
+        for term in ["beforemarker", "aftermarker", "absentmarker", "lostmarker"] {
+            let args = ["find", term, "--json", "--schema-version", "1"];
+            let out = if indexed {
+                run(home, &args)
+            } else {
+                raw(home, &args)
+            };
+            let value: Value = serde_json::from_str(&out.stdout).unwrap();
+            assert_eq!(value["complete"], false, "{}", out.stdout);
+            assert_eq!(value["status"], "partial", "{}", out.stdout);
+            let issues: Vec<_> = value["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["code"] == "malformed_record")
+                .collect();
+            assert_eq!(issues.len(), 3, "{}", out.stdout);
+            if term == "beforemarker" || term == "aftermarker" {
+                assert_eq!(
+                    value["result"]["matches"][0]["session"]["identity"]["id"], C1,
+                    "{}",
+                    out.stdout
+                );
+                assert!(
+                    value["result"]["matches"][0]["hits"]
+                        .to_string()
+                        .contains(term),
+                    "{}",
+                    out.stdout
+                );
+            } else {
+                assert_eq!(value["result"]["total"], 0, "{}", out.stdout);
+                assert_eq!(value["result"]["matches"], json!([]), "{}", out.stdout);
+            }
+        }
+    }
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        original,
+        "source bytes are unchanged"
+    );
+
+    append(&path, &[user(2, "appendedmarker")]);
+    let appended = run(
+        home,
+        &["find", "appendedmarker", "--json", "--schema-version", "1"],
+    );
+    let value: Value = serde_json::from_str(&appended.stdout).unwrap();
+    assert_eq!(value["complete"], false);
+    assert_eq!(
+        value["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["code"] == "malformed_record")
+            .count(),
+        3,
+        "{}",
+        appended.stdout
+    );
+    assert!(appended.stdout.contains("appendedmarker"));
+    assert_eq!(count(&db(home), &path), 3);
+
+    // A source rewrite that removes corruption clears the stored warning.
+    fs::write(&path, lines(&[user(0, "repairedmarker")])).unwrap();
+    let fixed = run(
+        home,
+        &["find", "repairedmarker", "--json", "--schema-version", "1"],
+    );
+    let value: Value = serde_json::from_str(&fixed.stdout).unwrap();
+    assert_eq!(value["complete"], true, "{}", fixed.stdout);
+    assert!(!fixed.stdout.contains("malformed_record"));
+}
+
+#[test]
+fn an_indexed_partial_escape_is_retried_and_its_warning_clears_when_completed() {
+    use std::io::Write;
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    let path = claude(home, C1, &[user(0, "beforemarker")]);
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(br#"{"type":"user","message":{"content":"tailmarker \u12"#)
+        .unwrap();
+    let args = ["find", "tailmarker", "--json", "--schema-version", "1"];
+    for _ in 0..2 {
+        let out = run(home, &args);
+        let value: Value = serde_json::from_str(&out.stdout).unwrap();
+        assert_eq!(value["complete"], false, "{}", out.stdout);
+        assert_eq!(
+            value["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["code"] == "malformed_record")
+                .count(),
+            1,
+            "{}",
+            out.stdout
+        );
+        assert!(out.stdout.contains("unterminated final record"));
+    }
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"34\"}}\n")
+        .unwrap();
+    let out = run(home, &args);
+    let value: Value = serde_json::from_str(&out.stdout).unwrap();
+    assert_eq!(value["complete"], true, "{}", out.stdout);
+    assert!(out.stdout.contains(C1));
+    assert_eq!(count(&db(home), &path), 2);
+}
+
+#[test]
+fn metadata_tail_raw_and_index_diagnostics_count_records_once() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    let path = claude(home, C1, &[user(0, "beforemarker")]);
+    let mut original = fs::read(&path).unwrap();
+    original.extend_from_slice(b"broken\nbroken\n");
+    original.extend_from_slice(lines(&[user(1, "aftermarker")]).as_bytes());
+    fs::write(&path, &original).unwrap();
+    for indexed in [false, true, true] {
+        for term in ["beforemarker", "aftermarker", "absentmarker"] {
+            let args = ["find", term, "--json", "--schema-version", "1"];
+            let out = if indexed {
+                run(home, &args)
+            } else {
+                raw(home, &args)
+            };
+            let value: Value = serde_json::from_str(&out.stdout).unwrap();
+            assert_eq!(value["complete"], false, "{}", out.stdout);
+            assert_eq!(
+                value["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|d| d["code"] == "malformed_record")
+                    .count(),
+                2,
+                "{}",
+                out.stdout
+            );
+            assert_eq!(
+                value["result"]["total"],
+                if term == "absentmarker" { 0 } else { 1 }
+            );
+        }
+    }
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn legacy_writes_coexist_without_certifying_new_coverage() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    let path = claude(home, C1, &[user(0, "compatmarker")]);
+    append(
+        &path,
+        &[json!({"type":"system","content":"padding".repeat(50_000)})],
+    );
+    let mut source = fs::read(&path).unwrap();
+    source.extend_from_slice(b"broken\n");
+    // Keep the malformed record out of metadata's initial and tail probes.
+    source.extend_from_slice(
+        lines(&[json!({"type":"system","content":"padding".repeat(50_000)})]).as_bytes(),
+    );
+    source.extend_from_slice(lines(&[user(1, "tailmarker")]).as_bytes());
+    fs::write(&path, &source).unwrap();
+    let cache = home.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let legacy = rusqlite::Connection::open(cache.join("find-index-v3.sqlite")).unwrap();
+    // The v3 writer has no issues column. Its unchanged source metadata and
+    // empty event set must never be accepted as validated v4 coverage.
+    legacy.execute_batch(
+        "CREATE TABLE files(path TEXT PRIMARY KEY, harness TEXT NOT NULL, size INTEGER NOT NULL,
+             mtime_ns INTEGER NOT NULL, offset INTEGER NOT NULL, mode TEXT NOT NULL,
+             tail_hash TEXT NOT NULL, n_events INTEGER NOT NULL);",
+    ).unwrap();
+    let meta = fs::metadata(&path).unwrap();
+    let mtime = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i64;
+    let key = format!(
+        "~{}{}",
+        std::path::MAIN_SEPARATOR,
+        path.strip_prefix(home).unwrap().display()
+    );
+    let write_old = || {
+        legacy
+            .execute(
+                "INSERT INTO files(path,harness,size,mtime_ns,offset,mode,tail_hash,n_events)
+         VALUES (?1,'claude',?2,?3,?2,'append','',0)
+         ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns",
+                rusqlite::params![key, meta.len() as i64, mtime],
+            )
+            .unwrap()
+    };
+    write_old();
+    for _ in 0..2 {
+        let out = run(
+            home,
+            &["find", "compatmarker", "--json", "--schema-version", "1"],
+        );
+        assert_eq!(out.code, 3, "{}", out.stderr);
+        let value: Value = serde_json::from_str(&out.stdout).unwrap();
+        assert_eq!(value["complete"], false, "{}", out.stdout);
+        assert_eq!(value["result"]["total"], 1, "{}", out.stdout);
+        assert!(!out.stderr.contains("index_unavailable"), "{}", out.stderr);
+        assert_eq!(count(&db(home), &path), 2);
+        // An older process can keep writing after the newer one has opened.
+        assert_eq!(write_old(), 1);
+        assert_eq!(
+            legacy
+                .query_row("SELECT n_events FROM files", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(fs::read(&path).unwrap(), source);
+}
+
+#[test]
+fn malformed_persisted_issues_are_stale_and_replaced_without_duplicate_events() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    let path = claude(home, C1, &[user(0, "repairmarker")]);
+    let source = fs::read(&path).unwrap();
+    assert_eq!(run(home, &["index"]).code, 0);
+    for issues in ["not json", "null", "{}", "[[0,1]]"] {
+        db(home)
+            .execute("UPDATE files SET issues=?1", [issues])
+            .unwrap();
+        let out = run_with(
+            home,
+            &home.join("cache"),
+            &["find", "repairmarker", "--json", "--schema-version", "1"],
+            &[("AGENT_TRACES_INDEX_BUDGET_MS", "0")],
+        );
+        let value: Value = serde_json::from_str(&out.stdout).unwrap();
+        assert_eq!(value["complete"], true, "{}", out.stdout);
+        assert_eq!(value["result"]["total"], 1);
+        assert!(
+            value["result"]["index"]
+                .as_str()
+                .unwrap()
+                .contains("1 scanned raw")
+        );
+        assert!(!out.stderr.contains("index_unavailable"), "{}", out.stderr);
+        let out = run(
+            home,
+            &["find", "repairmarker", "--json", "--schema-version", "1"],
+        );
+        let value: Value = serde_json::from_str(&out.stdout).unwrap();
+        assert_eq!(value["complete"], true, "{}", out.stdout);
+        assert_eq!(value["result"]["total"], 1);
+        assert!(
+            value["result"]["index"]
+                .as_str()
+                .unwrap()
+                .contains("1 refreshed now")
+        );
+        assert_eq!(count(&db(home), &path), 1);
+        assert_eq!(
+            db(home)
+                .query_row("SELECT count(*) FROM docs", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db(home)
+                .query_row("SELECT issues FROM files", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "[]"
+        );
+    }
+    assert_eq!(fs::read(&path).unwrap(), source);
 }

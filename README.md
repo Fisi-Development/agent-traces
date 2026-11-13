@@ -180,7 +180,14 @@ not carry last month's errors into this week's ranking. Pass `--all-events` to
 score whole sessions. A score ranks candidates for reading; it is not a failure
 rate. Skipped records are reported on stderr with their store path, and an
 unterminated final record is named as such, since it usually means the file was
-being written while it was read.
+being written while it was read. Malformed JSONL records, including invalid
+Unicode escapes, are skipped without discarding valid neighboring records or
+modifying the source. Search coverage remains incomplete when a record cannot
+be decoded: text output warns, and `--schema-version 1` reports `complete=false`.
+Repeated reads in one command report a bad record once, by source byte offset.
+The find index retains these warnings across later searches, including searches
+with no matches. Completing a partial final record or rewriting a source without
+corruption clears the corresponding cached warning on refresh.
 
 `ls` answers listing questions without a script. `--cwd DIR` matches any cwd
 containing DIR, case-insensitive. `--grep TEXT` keeps sessions whose id, title,
@@ -226,7 +233,7 @@ including those past `--limit`. The summary line goes to stderr.
 From 0.3.0, `find` over the default `--in prompts` scope and `--in assistant`
 answers from a SQLite full-text index instead of reading every Claude, Codex and
 Grok transcript. The index holds one row per prompt, command and assistant event
-(lowercased, FTS5 trigram tokenizer, `find-index-v3.sqlite` in the cache
+(lowercased, FTS5 trigram tokenizer, `find-index-v4.sqlite` in the cache
 directory, `~/.cache/agent-traces` unless `AGENT_TRACES_CACHE` says otherwise)
 and is this tool's own file, never a session store. Each `find` first checks the
 size and modification time of every transcript it would search, reads only the
@@ -246,8 +253,13 @@ budget and scans the rest raw; run `agent-traces index` once, or on a schedule,
 to index everything ahead of time. It prints the files already indexed, those
 refreshed, the event count, the seconds taken and the index size on disk.
 `index` takes the session filters of `ls` (`--harness`, `--subagents`, `--cwd`,
-`--since`, `--until`). Deleting `find-index-v3.sqlite` is always safe: it is
-rebuilt on demand.
+`--since`, `--until`). Deleting `find-index-v4.sqlite` is always safe: it is
+rebuilt on demand. Older binaries use separate versioned index files, which are
+left intact so both versions can share a cache safely. The v4 index starts empty
+and validates sources itself; it never imports older rows as validated coverage.
+Raw scans also validate records that do not contain the search terms, which
+costs extra CPU compared with a byte-only prefilter. A current v4 index reuses
+stored diagnostics without reparsing those transcripts.
 
 From 0.4.0 the index also stores each event as the adapter produced it, so a
 `find` scores the transcripts it holds current from the index and reads none of

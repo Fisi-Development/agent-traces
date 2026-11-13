@@ -1,5 +1,9 @@
 //! Streaming, permissive JSON Lines readers shared by store adapters.
 use crate::context::Context;
+use serde::{
+    Deserialize, Deserializer,
+    de::{MapAccess, SeqAccess, Visitor},
+};
 use serde_json::Value;
 use std::{
     fs::File,
@@ -94,6 +98,55 @@ pub fn open(path: &Path) -> io::Result<Box<dyn BufRead>> {
 
 // Python's json.loads(strict=False) accepts literal control bytes inside strings.
 pub fn decode(raw: &[u8]) -> serde_json::Result<Value> {
+    decode_as(raw)
+}
+
+// Unlike IgnoredAny, deserialize_any validates UTF-8, surrogate pairs, number
+// range and nesting depth just as Value does, without building a value tree.
+struct Validated;
+impl<'de> Deserialize<'de> for Validated {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_any(Self)
+    }
+}
+impl<'de> Visitor<'de> for Validated {
+    type Value = Self;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self, A::Error> {
+        while seq.next_element::<Self>()?.is_some() {}
+        Ok(self)
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+        while map.next_entry::<Self, Self>()?.is_some() {}
+        Ok(self)
+    }
+}
+
+pub fn validate(raw: &[u8]) -> serde_json::Result<()> {
+    decode_as::<Validated>(raw).map(|_| ())
+}
+
+fn decode_as<T: serde::de::DeserializeOwned>(raw: &[u8]) -> serde_json::Result<T> {
     if let Ok(value) = serde_json::from_slice(raw) {
         return Ok(value);
     }
@@ -154,15 +207,17 @@ pub fn records<'a>(
     let mut raw = Vec::new();
     let mut lower = Vec::new();
     let mut index = 0;
+    let mut offset = 0;
     let mut finished = false;
     Box::new(std::iter::from_fn(move || {
         while !finished {
             raw.clear();
             let i = index;
+            let record_offset = offset;
             index += 1;
             match reader.read_until(b'\n', &mut raw) {
                 Ok(0) => return None,
-                Ok(_) => {}
+                Ok(n) => offset += n as u64,
                 Err(e) => {
                     finished = true;
                     ctx.diagnostic("store_unreadable", None, Some(&path), e.to_string());
@@ -187,31 +242,41 @@ pub fn records<'a>(
                             })));
                 if !keep {
                     ctx.skipped.set(ctx.skipped.get() + 1);
+                    if let Err(e) = validate(&raw) {
+                        report_record(ctx, None, &path, record_offset, i, &raw, &e);
+                    }
                     continue;
                 }
             }
             match decode(&raw) {
                 Ok(v) => return Some((i, v)),
-                // A live session's last record can be read mid-write.
-                Err(e) if raw.last() != Some(&b'\n') => ctx.diagnostic(
-                    "malformed_record",
-                    None,
-                    Some(&path),
-                    format!(
-                        "line {}: unterminated final record skipped (file may still be written): {e}",
-                        i + 1
-                    ),
-                ),
-                Err(e) => ctx.diagnostic(
-                    "malformed_record",
-                    None,
-                    Some(&path),
-                    format!("line {}: {e}", i + 1),
-                ),
+                Err(e) => report_record(ctx, None, &path, record_offset, i, &raw, &e),
             }
         }
         None
     }))
+}
+
+pub fn report_record(
+    ctx: &Context,
+    harness: Option<&str>,
+    path: &Path,
+    offset: u64,
+    index: usize,
+    raw: &[u8],
+    error: &serde_json::Error,
+) {
+    let detail = if raw.last() == Some(&b'\n') {
+        "malformed record skipped; search coverage is incomplete"
+    } else {
+        "unterminated final record skipped (file may still be written)"
+    };
+    ctx.malformed_record(
+        harness,
+        path,
+        offset,
+        format!("line {}: {detail}: {error}", index + 1),
+    );
 }
 
 pub fn tail_lines(ctx: &Context, path: &Path, nbytes: usize) -> Vec<Value> {
@@ -250,20 +315,22 @@ pub fn tail_lines(ctx: &Context, path: &Path, nbytes: usize) -> Vec<Value> {
             return vec![];
         }
     };
-    String::from_utf8_lossy(&data)
-        .lines()
+    let mut offset = size.saturating_sub(nbytes as u64);
+    data.split_inclusive(|b| *b == b'\n')
         .enumerate()
         .filter_map(|(i, l)| {
+            let record_offset = offset;
+            offset += l.len() as u64;
             if size > nbytes as u64 && i == 0 {
                 return None;
             }
-            match decode(l.as_bytes()) {
+            match decode(l) {
                 Ok(v) => Some(v),
                 Err(e) => {
-                    ctx.diagnostic(
-                        "malformed_record",
+                    ctx.malformed_record(
                         None,
-                        Some(path),
+                        path,
+                        record_offset,
                         format!("tail line {}: {e}", i + 1),
                     );
                     None
@@ -275,6 +342,112 @@ pub fn tail_lines(ctx: &Context, path: &Path, nbytes: usize) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn validation_keeps_decode_semantics_without_ignored_any_shortcuts() {
+        for raw in [br#""\ud83d""#.as_slice(), br#"{"\udc00":0}"#, br#"1e9999"#] {
+            assert!(serde_json::from_slice::<serde::de::IgnoredAny>(raw).is_ok());
+            assert!(decode(raw).is_err());
+            assert!(validate(raw).is_err(), "{raw:?}");
+        }
+        let cases: &[(&[u8], bool)] = &[
+            (
+                br#"{"s":"\ud83d\ude00","a":[null,true,false,-2,1.5,18446744073709551616]}"#,
+                true,
+            ),
+            (b"{\"s\":\"A\x01\xff\"}", true),
+            (b"{\"A\x00\xff\":0}", true),
+            (br#"{"s":"\\ud83d"}"#, true),
+            (br#"{"s":"\ud83dX"}"#, false),
+            (br#"{"s":"\udc00"}"#, false),
+            (br#"{"s":"\ud83d\u0041"}"#, false),
+            (br#"{"s":"\u12"}"#, false),
+            (br#"{"s":"\q"}"#, false),
+            (b"{\"s\":\"escaped\\\x01\"}", false),
+            (br#"{} {}"#, false),
+            (br#"{"a":[1,]}"#, false),
+            (br#"{"a":01}"#, false),
+            (b"{\xff:0}", false),
+            (b"", false),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(decode(raw).is_ok(), *expected, "decode {raw:?}");
+            assert_eq!(validate(raw).is_ok(), *expected, "validate {raw:?}");
+        }
+        for control in 0..32 {
+            let raw = [b'"', control, b'"'];
+            assert!(serde_json::from_slice::<serde::de::IgnoredAny>(&raw).is_err());
+            assert!(validate(&raw).is_ok(), "control {control}");
+            assert_eq!(
+                decode(&raw).unwrap().as_str().unwrap().as_bytes(),
+                &[control]
+            );
+        }
+        for depth in [127, 128, 129] {
+            let raw = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+            assert_eq!(validate(raw.as_bytes()).is_ok(), depth < 128);
+            assert_eq!(decode(raw.as_bytes()).is_ok(), depth < 128);
+        }
+    }
+
+    #[test]
+    fn repeated_reads_report_each_bad_record_once_by_byte_offset() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("records.jsonl");
+        // Invalid UTF-8 before the errors must not shift byte offsets in the tail.
+        let original = b"{\"s\":\"\xff\"}\r\nbroken\n{\"s\":\"ok\"}\nbroken\n{\"s\":\"\\u12";
+        for compressed in [false, true] {
+            let actual = if compressed {
+                path.with_extension("jsonl.zst")
+            } else {
+                path.clone()
+            };
+            std::fs::write(
+                &actual,
+                if compressed {
+                    zst(&[original])
+                } else {
+                    original.to_vec()
+                },
+            )
+            .unwrap();
+            let ctx = Context::from_env();
+            assert_eq!(tail_lines(&ctx, &path, 40).len(), 1);
+            assert_eq!(records(&ctx, &path, 0, Some(&["absent".into()])).count(), 0);
+            assert_eq!(records(&ctx, &path, 0, None).count(), 2);
+            assert_eq!(records(&ctx, &path, 2, None).count(), 1);
+            assert_eq!(ctx.diagnostics.borrow().len(), 3);
+            assert!(
+                ctx.diagnostics
+                    .borrow()
+                    .iter()
+                    .all(|d| d.code == "malformed_record")
+            );
+            let bytes = std::fs::read(&actual).unwrap();
+            assert_eq!(
+                bytes,
+                if compressed {
+                    zst(&[original])
+                } else {
+                    original.to_vec()
+                }
+            );
+            std::fs::remove_file(actual).unwrap();
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn symlink_aliases_report_a_bad_record_once() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("records.jsonl");
+        let alias = t.path().join("alias.jsonl");
+        std::fs::write(&path, b"broken\n").unwrap();
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        let ctx = Context::from_env();
+        assert_eq!(records(&ctx, &path, 0, None).count(), 0);
+        assert_eq!(records(&ctx, &alias, 0, None).count(), 0);
+        assert_eq!(ctx.diagnostics.borrow().len(), 1);
+    }
+
     #[test]
     fn permissive_and_skipped() {
         let t = tempfile::tempdir().unwrap();

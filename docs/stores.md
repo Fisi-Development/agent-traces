@@ -69,21 +69,25 @@ Surveyed 2026-09-23 on the author's machines; the counts and dates below come fr
 
 ## Find index
 
-`find` over the `prompts` and `assistant` scopes reads `find-index-v3.sqlite` in
+`find` over the `prompts` and `assistant` scopes reads `find-index-v4.sqlite` in
 the cache directory (`AGENT_TRACES_CACHE`, default `~/.cache/agent-traces`)
 instead of Claude, Codex and Grok transcripts. It is the tool's own file, safe to
 delete. Table `files` records each transcript's path, harness, size, mtime in
 nanoseconds, the byte offset after its last complete line, the SHA-256 of the
-up to 4,096 bytes ending at that offset (`tail_hash`), and a `mode`. When a
+up to 4,096 bytes ending at that offset (`tail_hash`), a `mode`, and `issues`
+(JSON pairs of record byte offset and diagnostic text). Invalid persisted
+`issues` make a transcript stale: refresh rebuilds its rows, or the query scans
+it raw when no refresh budget remains. When a
 file's size or mtime changed, `append` mode reads only the new lines from the
 offset if the file grew and the bytes ending at the offset still hash to
 `tail_hash`; otherwise (same size with a new mtime, shrunk, a changed tail) the
 file's rows are dropped and it is reindexed from byte 0, as is a compressed
 (`.zst`) rollout, which is always `full`. An edit before the last 4 KB together
 with growth goes undetected; transcripts are append-only. Every refresh also
-drops the rows of stored transcripts whose file no longer exists. Earlier
-databases are deleted on open: `find-index-v1.sqlite` has no `tail_hash`,
-`find-index-v2.sqlite` no `docs`. Table `events` is an FTS5 table with the
+drops the rows of stored transcripts whose file no longer exists. Older
+databases and their SQLite sidecars are left intact so older binaries can keep
+using them. V4 validates its sources independently and never imports older rows
+as validated coverage. Table `events` is an FTS5 table with the
 `trigram` tokenizer storing `body` (the lowercased event text), `path` and `role`
 for `prompt`, `command` and `assistant` events. Every adapter turns a record into
 events without carrying state across lines, so a tail parsed from an offset equals

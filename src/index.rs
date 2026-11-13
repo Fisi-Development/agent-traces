@@ -24,9 +24,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const FILE_NAME: &str = "find-index-v3.sqlite";
-/// Earlier schemas' files, removed on open: v1 has no `tail_hash`, v2 no `docs`.
-const OLD_FILE_NAMES: [&str; 2] = ["find-index-v1.sqlite", "find-index-v2.sqlite"];
+// v4 validates every record and persists diagnostics. Keep older filenames intact:
+// installed older binaries may still read and write them in the same cache.
+pub const FILE_NAME: &str = "find-index-v4.sqlite";
 /// Bytes before the stored offset whose hash must still match for an append.
 const TAIL_BYTES: u64 = 4096;
 const DEFAULT_BUDGET_MS: u64 = 8000;
@@ -98,8 +98,8 @@ fn record_events(harness: &str, record: &Value) -> Vec<crate::model::Event> {
 /// offset after that line and the hash of the up to `TAIL_BYTES` bytes ending
 /// there (empty for a compressed file, which is always reindexed whole). A final
 /// line with no newline counts only when it parses, as the raw readers do.
-/// Rows, end offset and tail hash of one `read_events` pass.
-type Parsed = (Vec<Row>, u64, String);
+/// Rows, end offset, tail hash and (record byte offset, diagnostic) pairs.
+type Parsed = (Vec<Row>, u64, String, Vec<(u64, String)>);
 
 /// One stored event: role, lowercased text, the event's JSON, the byte offset
 /// where its record starts (`rec`) and the record's `uuid` (Claude only, else
@@ -127,6 +127,7 @@ fn read_events(
     };
     let mut consumed = if compressed { 0 } else { start };
     let mut rows = Vec::new();
+    let mut issues = Vec::new();
     let mut raw = Vec::new();
     loop {
         raw.clear();
@@ -156,10 +157,19 @@ fn read_events(
                     }
                 }
             }
-            // A malformed complete line is skipped for good, as the raw readers do.
-            Err(_) if raw.last() == Some(&b'\n') => {}
-            // A writer may be mid-line: leave it for the next refresh.
-            Err(_) => break,
+            Err(e) => {
+                let final_record = raw.last() != Some(&b'\n');
+                let detail = if final_record {
+                    "unterminated final record skipped (file may still be written)"
+                } else {
+                    "malformed record skipped; search coverage is incomplete"
+                };
+                issues.push((consumed, format!("byte offset {consumed}: {detail}: {e}")));
+                // A writer may be mid-line: leave it for the next refresh.
+                if final_record {
+                    break;
+                }
+            }
         }
         consumed += n as u64;
         if !compressed {
@@ -174,7 +184,7 @@ fn read_events(
     } else {
         hex_sha256(&tail[tail.len().saturating_sub(TAIL_BYTES as usize)..])
     };
-    Ok((rows, consumed, hash))
+    Ok((rows, consumed, hash, issues))
 }
 
 /// True only when neither `path` nor its compressed sibling exists. Any other
@@ -221,6 +231,7 @@ struct Stored {
     mode: String,
     tail_hash: String,
     n_events: i64,
+    issues: Vec<(u64, String)>,
 }
 
 impl Index {
@@ -228,12 +239,6 @@ impl Index {
         let path = crate::core::ensure_output_path(ctx, &ctx.cache_dir.join(FILE_NAME))?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
-        }
-        // Best effort: the old schema's database is dead weight now.
-        for old in OLD_FILE_NAMES {
-            for suffix in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(ctx.cache_dir.join(format!("{old}{suffix}")));
-            }
         }
         let conn = Connection::open(&path)?;
         Self::init(conn)
@@ -243,9 +248,8 @@ impl Index {
         conn.busy_timeout(Duration::from_secs(5))?;
         let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
-        // A v3 file from before `rec`, `uuid` and `n_events`, or one left half
-        // rebuilt by an interrupted run, is rebuilt from scratch. The check and the
-        // rebuild run in one transaction (SQLite DDL is transactional), so a stop
+        // An incompatible or half-rebuilt v4 file is rebuilt from scratch. The
+        // check and rebuild run in one transaction (SQLite DDL is transactional), so a stop
         // midway rolls back and the next open sees the same mismatch again.
         let tx = conn.unchecked_transaction()?;
         let has = |table: &str, column: &str| -> bool {
@@ -263,7 +267,10 @@ impl Index {
                 |r| r.get(0),
             )
             .unwrap_or(false);
-        let current = has("files", "n_events") && has("docs", "uuid") && has("events", "body");
+        let current = has("files", "issues")
+            && has("files", "n_events")
+            && has("docs", "uuid")
+            && has("events", "body");
         if any_table && !current {
             tx.execute_batch(
                 "DROP TABLE IF EXISTS docs; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS files;",
@@ -273,7 +280,7 @@ impl Index {
             "CREATE TABLE IF NOT EXISTS files(
                  path TEXT PRIMARY KEY, harness TEXT NOT NULL, size INTEGER NOT NULL,
                  mtime_ns INTEGER NOT NULL, offset INTEGER NOT NULL, mode TEXT NOT NULL,
-                 tail_hash TEXT NOT NULL, n_events INTEGER NOT NULL);
+                 tail_hash TEXT NOT NULL, n_events INTEGER NOT NULL, issues TEXT NOT NULL);
              CREATE VIRTUAL TABLE IF NOT EXISTS events USING fts5(
                  body, path UNINDEXED, role UNINDEXED, tokenize='trigram');
              -- One row per `events` row, with the same rowid: the event as the
@@ -289,20 +296,28 @@ impl Index {
 
     fn stored(conn: &Connection, key: &str) -> rusqlite::Result<Option<Stored>> {
         conn.query_row(
-            "SELECT size, mtime_ns, offset, mode, tail_hash, n_events FROM files WHERE path = ?1",
+            "SELECT size, mtime_ns, offset, mode, tail_hash, n_events, issues FROM files WHERE path = ?1",
             [key],
             |r| {
-                Ok(Stored {
+                // Invalid persisted diagnostics cannot certify coverage. Refresh
+                // replaces these rows, or scans raw when its budget has expired.
+                let Some(issues) = r.get::<_, String>(6).ok()
+                    .and_then(|raw| serde_json::from_str(&raw).ok()) else {
+                    return Ok(None);
+                };
+                Ok(Some(Stored {
                     size: r.get(0)?,
                     mtime_ns: r.get(1)?,
                     offset: r.get(2)?,
                     mode: r.get(3)?,
                     tail_hash: r.get(4)?,
                     n_events: r.get(5)?,
-                })
+                    issues,
+                }))
             },
         )
         .optional()
+        .map(Option::flatten)
     }
 
     /// Bring one transcript up to date. `allow_work` false only reports whether
@@ -353,7 +368,7 @@ impl Index {
         // Limit: an edit before the last 4 KB together with growth is not
         // detected, since transcripts are append-only.
         let (start, replace) = match &before {
-            None => (0, false),
+            None => (0, true),
             Some(b)
                 if b.mode == "append"
                     && !compressed
@@ -365,11 +380,24 @@ impl Index {
             }
             Some(_) => (0, true),
         };
-        let (rows, offset, tail_hash) = match read_events(harness, &real, compressed, start) {
-            Ok(read) => read,
-            // The raw scan reports an unreadable transcript as it always has.
-            Err(_) => return Ok(Status::Skipped),
-        };
+        let (rows, offset, tail_hash, mut issues) =
+            match read_events(harness, &real, compressed, start) {
+                Ok(read) => read,
+                // The raw scan reports an unreadable transcript as it always has.
+                Err(_) => return Ok(Status::Skipped),
+            };
+        if let Some(b) = &before
+            && !replace
+        {
+            // Retry the partial record at `start`, replacing its old diagnostic.
+            issues.splice(
+                0..0,
+                b.issues
+                    .iter()
+                    .filter(|(offset, _)| *offset < start)
+                    .cloned(),
+            );
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -390,7 +418,10 @@ impl Index {
                 _ => 0,
             };
         if replace {
-            tx.execute("DELETE FROM events WHERE path = ?1", [key])?;
+            tx.execute(
+                "DELETE FROM events WHERE rowid IN (SELECT id FROM docs WHERE path = ?1)",
+                [key],
+            )?;
             tx.execute("DELETE FROM docs WHERE path = ?1", [key])?;
         }
         {
@@ -411,11 +442,11 @@ impl Index {
             }
         }
         tx.execute(
-            "INSERT INTO files(path, harness, size, mtime_ns, offset, mode, tail_hash, n_events)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO files(path, harness, size, mtime_ns, offset, mode, tail_hash, n_events, issues)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(path) DO UPDATE SET harness = excluded.harness, size = excluded.size,
                  mtime_ns = excluded.mtime_ns, offset = excluded.offset, mode = excluded.mode,
-                 tail_hash = excluded.tail_hash, n_events = excluded.n_events",
+                 tail_hash = excluded.tail_hash, n_events = excluded.n_events, issues = excluded.issues",
             params![
                 key,
                 harness,
@@ -424,11 +455,21 @@ impl Index {
                 offset as i64,
                 mode,
                 tail_hash,
-                n_events
+                n_events,
+                serde_json::to_string(&issues)?
             ],
         )?;
         tx.commit()?;
         Ok(Status::Refreshed)
+    }
+
+    fn report_issues(&self, ctx: &Context, key: &str) -> Result<()> {
+        if let Some(stored) = Self::stored(&self.conn, key)? {
+            for (offset, message) in stored.issues {
+                ctx.malformed_record(None, &ctx.expand(key), offset, message);
+            }
+        }
+        Ok(())
     }
 
     /// Drop the rows of every stored transcript of `harnesses` whose file no
@@ -699,6 +740,7 @@ impl Run {
         }
         self.served = current.iter().cloned().collect();
         for key in current {
+            index.report_issues(ctx, &key)?;
             let keep = queries
                 .iter()
                 .map(|terms| {
@@ -790,8 +832,14 @@ pub fn build(ctx: &Context, rows: &[Session]) -> Result<Stats> {
             continue;
         }
         match index.refresh(harness, key, &ctx.expand(key), true)? {
-            Status::Current => current += 1,
-            Status::Refreshed => refreshed += 1,
+            Status::Current => {
+                current += 1;
+                index.report_issues(ctx, key)?;
+            }
+            Status::Refreshed => {
+                refreshed += 1;
+                index.report_issues(ctx, key)?;
+            }
             Status::Gone => gone.push(key.to_owned()),
             Status::Skipped => failed += 1,
         }
@@ -906,17 +954,17 @@ mod tests {
             let path = dir.path().join("t.jsonl");
             let all = lines(&records);
             std::fs::write(&path, &all).unwrap();
-            let (full, end, _) = read_events(harness, &path, false, 0).unwrap();
+            let (full, end, _, _) = read_events(harness, &path, false, 0).unwrap();
             assert_eq!(end as usize, all.len(), "{harness}");
             assert!(full.len() >= 3, "{harness} fixture yields events: {full:?}");
             // Split after every record: prefix rows then tail rows equal the full parse.
             for cut in 1..records.len() {
                 let prefix = lines(&records[..cut]);
                 std::fs::write(&path, &prefix).unwrap();
-                let (head, offset, _) = read_events(harness, &path, false, 0).unwrap();
+                let (head, offset, _, _) = read_events(harness, &path, false, 0).unwrap();
                 assert_eq!(offset as usize, prefix.len());
                 std::fs::write(&path, &all).unwrap();
-                let (tail, _, _) = read_events(harness, &path, false, offset).unwrap();
+                let (tail, _, _, _) = read_events(harness, &path, false, offset).unwrap();
                 let joined: Vec<_> = head.into_iter().chain(tail).collect();
                 assert_eq!(joined, full, "{harness} cut at record {cut}");
             }
@@ -930,7 +978,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("t.jsonl");
             std::fs::write(&path, lines(&records)).unwrap();
-            let (rows, _, _) = read_events(harness, &path, false, 0).unwrap();
+            let (rows, _, _, _) = read_events(harness, &path, false, 0).unwrap();
             let row = json!({"harness": harness, "path": path.to_str().unwrap()});
             let expected: Vec<_> = crate::core::adapter(harness)
                 .unwrap()
@@ -955,11 +1003,11 @@ mod tests {
             json!({"type":"assistant","message":{"content":[{"type":"text","text":"two"}]}});
         let text = format!("{first}\n{{\"type\":\"assistant\",\"mess");
         std::fs::write(&path, &text).unwrap();
-        let (rows, offset, _) = read_events("claude", &path, false, 0).unwrap();
+        let (rows, offset, _, _) = read_events("claude", &path, false, 0).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(offset as usize, first.to_string().len() + 1);
         std::fs::write(&path, format!("{first}\n{second}")).unwrap();
-        let (rows, offset, _) = read_events("claude", &path, false, 0).unwrap();
+        let (rows, offset, _, _) = read_events("claude", &path, false, 0).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(
             offset as usize,

@@ -305,9 +305,13 @@ fn meta(ctx: &Context, path: &Path, home: &Path, sub: bool, cache: &mut Value) -
         cached["meta"].clone()
     } else {
         // Failed reads must be retried so a cache hit cannot hide incomplete metadata.
-        let diagnostics_before = ctx.diagnostics.borrow().len();
         let m = extract(ctx, path);
-        if ctx.diagnostics.borrow().len() == diagnostics_before {
+        if !ctx
+            .diagnostics
+            .borrow()
+            .iter()
+            .any(|d| d.store_id.as_deref() == Some(key.as_str()))
+        {
             cache[&key] = json!({"size":st.len(),"mtime":modified,"meta":m});
         } else if let Some(entries) = cache.as_object_mut() {
             entries.remove(&key);
@@ -899,9 +903,6 @@ mod tests {
     #[test]
     fn malformed_metadata_remains_incomplete_after_cache_reload() {
         let temp = tempfile::tempdir().unwrap();
-        let mut ctx = Context::from_env();
-        ctx.home = temp.path().into();
-        ctx.cache_dir = temp.path().join("cache");
         let home = temp.path().join(".claude");
         let project = home.join("projects/project");
         fs::create_dir_all(&project).unwrap();
@@ -912,22 +913,22 @@ mod tests {
         )
         .unwrap();
         for _ in 0..2 {
-            ctx.diagnostics.borrow_mut().clear();
+            let mut ctx = Context::from_env();
+            ctx.home = temp.path().into();
+            ctx.cache_dir = temp.path().join("cache");
             let mut cache = load_cache(&ctx);
-            let row = meta(&ctx, &path, &home, false, &mut cache).unwrap();
-            assert_eq!(row["first_prompt"], "recoverable prompt");
-            assert!(
-                ctx.diagnostics
-                    .borrow()
-                    .iter()
-                    .any(|d| d.code == "malformed_record")
-            );
-            assert!(
-                !cache
-                    .as_object()
-                    .unwrap()
-                    .contains_key(path.to_string_lossy().as_ref())
-            );
+            for _ in 0..2 {
+                let row = meta(&ctx, &path, &home, false, &mut cache).unwrap();
+                assert_eq!(row["first_prompt"], "recoverable prompt");
+                assert_eq!(ctx.diagnostics.borrow().len(), 1);
+                assert_eq!(ctx.diagnostics.borrow()[0].code, "malformed_record");
+                assert!(
+                    !cache
+                        .as_object()
+                        .unwrap()
+                        .contains_key(path.to_string_lossy().as_ref())
+                );
+            }
             save_cache(&ctx, &cache);
         }
     }

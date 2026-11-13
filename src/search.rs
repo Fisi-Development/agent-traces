@@ -96,25 +96,32 @@ fn file_matches_multi(
     path: &Path,
     queries: &[Vec<Regex>],
 ) -> Option<Vec<bool>> {
-    Some(match file_matches_multi_inner(path, queries) {
-        Ok(found) => found,
-        Err((_, error)) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err((found, error)) => {
-            ctx.diagnostic(
-                "store_unreadable",
-                Some(harness),
-                Some(path),
-                error.to_string(),
-            );
-            found
-        }
-    })
+    Some(
+        match file_matches_multi_inner(ctx, harness, path, queries) {
+            Ok(found) => found,
+            Err((_, error)) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err((found, error)) => {
+                ctx.diagnostic(
+                    "store_unreadable",
+                    Some(harness),
+                    Some(path),
+                    error.to_string(),
+                );
+                found
+            }
+        },
+    )
 }
 #[cfg(test)]
 fn file_matches_inner(path: &Path, patterns: &[Regex]) -> std::io::Result<bool> {
-    Ok(file_matches_multi_inner(path, &[patterns.to_vec()]).map_err(|(_, error)| error)?[0])
+    Ok(
+        file_matches_multi_inner(&Context::from_env(), "claude", path, &[patterns.to_vec()])
+            .map_err(|(_, error)| error)?[0],
+    )
 }
 fn file_matches_multi_inner(
+    ctx: &Context,
+    harness: &str,
     path: &Path,
     queries: &[Vec<Regex>],
 ) -> std::result::Result<Vec<bool>, (Vec<bool>, std::io::Error)> {
@@ -128,6 +135,8 @@ fn file_matches_multi_inner(
         .collect();
     let mut remaining: Vec<_> = queries.iter().map(Vec::len).collect();
     let mut line = Vec::new();
+    let mut record_number = 0;
+    let mut offset = 0;
     loop {
         line.clear();
         // A query already satisfied before a later read error would have stopped
@@ -139,6 +148,19 @@ fn file_matches_multi_inner(
         {
             return Ok(remaining.iter().map(|n| *n == 0).collect());
         }
+        record_number += 1;
+        if let Err(error) = crate::storage::jsonl::validate(&line) {
+            crate::storage::jsonl::report_record(
+                ctx,
+                Some(harness),
+                path,
+                offset,
+                record_number - 1,
+                &line,
+                &error,
+            );
+        }
+        offset += line.len() as u64;
         for ((patterns, seen), remaining) in queries.iter().zip(&mut seen).zip(&mut remaining) {
             for (pattern, seen) in patterns.iter().zip(seen) {
                 if !*seen && pattern.is_match(&line) {
@@ -646,7 +668,7 @@ mod tests {
         let ctx = Context::from_env();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("partial.jsonl.zst");
-        let text = format!("needle\n{}", "other\n".repeat(50000));
+        let text = format!("\"needle\"\n{}", "\"other\"\n".repeat(50000));
         let mut bytes = compress_to_vec(text.as_bytes(), CompressionLevel::Fastest);
         bytes.extend_from_slice(b"invalid next frame");
         std::fs::write(&path, bytes).unwrap();
@@ -668,9 +690,9 @@ mod tests {
         let ctx = Context::from_env();
         let temp = tempfile::tempdir().unwrap();
         let hit = temp.path().join("hit.jsonl");
-        std::fs::write(&hit, b"TARGET.rs\n").unwrap();
+        std::fs::write(&hit, b"\"TARGET.rs\"\n").unwrap();
         let miss = temp.path().join("miss.jsonl");
-        std::fs::write(&miss, b"other.rs\n").unwrap();
+        std::fs::write(&miss, b"\"other.rs\"\n").unwrap();
         let missing = temp.path().join("missing.jsonl");
         let row = |h: &str, id: &str, p: &Path| serde_json::json!({"harness":h,"id":id,"path":p.to_str().unwrap()});
         let rows = vec![
@@ -786,7 +808,7 @@ mod tests {
             absent.to_str()
         );
         let empty = temp.path().join("empty.jsonl");
-        std::fs::write(&empty, b"unrelated text\n").unwrap();
+        std::fs::write(&empty, b"\"unrelated text\"\n").unwrap();
         assert!(!file_matches(&ctx, "claude", &empty, &patterns));
         assert_eq!(ctx.diagnostics.borrow().len(), 1);
         let defaults = SearchOptions::default();
