@@ -1,11 +1,12 @@
 use crate::{
     context::Context,
+    core,
     model::{Event, Session},
     render::*,
     util::*,
 };
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::{
@@ -28,9 +29,11 @@ pub struct ShowOptions {
     pub grep: Vec<String>,
     pub notices: bool,
     pub tools: bool,
+    pub tools_only: bool,
     pub full: bool,
     pub results: bool,
     pub full_stdout: bool,
+    pub json: bool,
     pub output: Option<PathBuf>,
 }
 fn artifact(path: PathBuf, text: String, quiet: bool) -> CommandOutput {
@@ -47,6 +50,147 @@ fn artifact(path: PathBuf, text: String, quiet: bool) -> CommandOutput {
         artifacts: vec![(path, text)],
         ..Default::default()
     }
+}
+fn redacted_json(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact(text)),
+        Value::Array(items) => Value::Array(items.iter().map(redacted_json).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (redact(key), redacted_json(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+fn redacted_tool_input(input: &Value) -> Value {
+    let parsed;
+    let input = match input.as_str() {
+        Some(text) => match serde_json::from_str::<Value>(text) {
+            Ok(value) if value.is_object() => {
+                parsed = value;
+                &parsed
+            }
+            _ => input,
+        },
+        None => input,
+    };
+    redacted_json(input)
+}
+fn show_event_json(event: &Event, full: bool) -> Value {
+    let text = match event.role.as_str() {
+        "prompt" | "command" if !full => clip(&event.text, 4000),
+        "assistant" if !full => clip(&event.text, 2500),
+        "result" | "notice" if !full => one_line(&event.text, 300),
+        "system" => one_line(&event.text, 300),
+        _ => event.text.clone(),
+    };
+    let mut out = serde_json::Map::new();
+    out.insert("role".into(), json!(event.role));
+    out.insert(
+        "ts".into(),
+        event
+            .ts
+            .map(|ts| json!(ts.to_rfc3339_opts(SecondsFormat::Secs, true)))
+            .unwrap_or(Value::Null),
+    );
+    out.insert("text".into(), json!(redact(&text)));
+    if let Some(name) = &event.name {
+        out.insert("name".into(), json!(name));
+    }
+    match event.role.as_str() {
+        "tool" => {
+            if let Some(input) = event.input.as_ref().filter(|input| !input.is_null()) {
+                out.insert(
+                    "input".into(),
+                    if full {
+                        redacted_tool_input(input)
+                    } else {
+                        json!(redact(&tool_summary(
+                            event.name.as_deref().unwrap_or(""),
+                            input,
+                        )))
+                    },
+                );
+            }
+            if let Some(id) = &event.id {
+                out.insert("call_id".into(), json!(id));
+            }
+        }
+        "result" => {
+            if let Some(id) = &event.tool_use_id {
+                out.insert("call_id".into(), json!(id));
+            }
+            out.insert("error".into(), json!(event.error));
+        }
+        "assistant" => {
+            if let Some(phase) = &event.phase {
+                out.insert("phase".into(), json!(phase));
+            }
+        }
+        _ => {}
+    }
+    Value::Object(out)
+}
+fn show_json(
+    ctx: &Context,
+    row: &Session,
+    turns: &[Vec<Event>],
+    selected: &Option<BTreeSet<usize>>,
+    opts: &ShowOptions,
+) -> Result<CommandOutput> {
+    let turns_total = turns.len();
+    let selected_turns = turns
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            selected
+                .as_ref()
+                .is_none_or(|selected| selected.contains(&(index + 1)))
+        })
+        .map(|(index, turn)| {
+            let events = turn
+                .iter()
+                .filter(|event| {
+                    if !opts.tools && ["tool", "result"].contains(&event.role.as_str()) {
+                        return false;
+                    }
+                    if opts.tools_only && !["tool", "result"].contains(&event.role.as_str()) {
+                        return false;
+                    }
+                    event.role != "result" || opts.results || opts.tools_only || event.error
+                })
+                .map(|event| show_event_json(event, opts.full))
+                .collect::<Vec<_>>();
+            json!({"turn":index + 1,"events":events})
+        })
+        .collect::<Vec<_>>();
+    let text = serde_json::to_string(&json!({
+        "session":redacted_json(&core::legacy_row(row)),
+        "turns_total":turns_total,
+        "turns":selected_turns,
+    }))? + "\n";
+    if let Some(path) = &opts.output {
+        return Ok(artifact(ctx.expand(&path.to_string_lossy()), text, false));
+    }
+    let chars = text.chars().count();
+    if chars <= 20000 || opts.full_stdout {
+        return Ok(CommandOutput {
+            stdout: text,
+            ..Default::default()
+        });
+    }
+    let path = ctx
+        .out_dir
+        .join(format!("{}-{}.json", s(row, "harness"), s(row, "id")));
+    let mut result = artifact(path.clone(), text, true);
+    result.stdout = serde_json::to_string(&json!({
+        "output":path.display().to_string(),
+        "chars":chars,
+        "turns_total":turns_total,
+    }))? + "\n";
+    Ok(result)
 }
 pub fn show(
     ctx: &Context,
@@ -90,6 +234,9 @@ pub fn show(
                 .collect(),
         );
     }
+    if opts.json {
+        return show_json(ctx, row, &turns, &sel, opts);
+    }
     let mut lines = vec![
         header(ctx, row),
         format!(
@@ -105,10 +252,17 @@ pub fn show(
         }
         lines.push(format!("\n---- turn {}/{n} ----", i + 1));
         for e in turn {
-            if e.role == "tool" && !opts.tools {
+            if (e.role == "tool" && !opts.tools)
+                || (opts.tools_only && !["tool", "result"].contains(&e.role.as_str()))
+            {
                 continue;
             }
-            let line = render_event(e, opts.full, opts.results);
+            let line = render_event_with_ids(
+                e,
+                opts.full,
+                opts.results || opts.tools_only,
+                opts.full || opts.tools_only,
+            );
             if !line.is_empty() {
                 lines.push(line);
             }
@@ -136,7 +290,7 @@ pub fn show(
             "\nOutput is {len} chars, over the 20000 budget. Full render: {}",
             path.display()
         ),
-        "Read it in slices, or narrow with --turns 3-5, --tail 2, or --grep TEXT.\n".into(),
+        "Read it in slices, or narrow with --turns 3-5, --tail 2, or --grep TEXT; use --tools-only for tool calls and --json for structured output.\n".into(),
         "Turn index:".into(),
     ];
     for (i, turn) in turns.iter().enumerate() {
@@ -1275,6 +1429,69 @@ mod tests {
         let last = out.stdout.trim_end().lines().last().unwrap();
         assert!(last.starts_with("Full render ("), "{last}");
         assert!(last.ends_with(&out.artifacts[0].0.display().to_string()));
+    }
+    #[test]
+    fn show_json_full_input_is_raw_and_redacted() {
+        let secret = "ghp_123456789012345678901234567890";
+        let event = tool("Bash", json!({"command":secret,"file_path":"/work/a"}));
+        let compact = show_event_json(&event, false);
+        assert!(compact["input"].is_string());
+        assert!(!compact["input"].as_str().unwrap().contains(secret));
+        let full = show_event_json(&event, true);
+        assert_eq!(full["input"]["command"], "<redacted>");
+        assert_eq!(full["input"]["file_path"], "/work/a");
+
+        let encoded = tool("Bash", Value::String(json!({"command":secret}).to_string()));
+        let full = show_event_json(&encoded, true);
+        assert_eq!(full["input"], json!({"command":"<redacted>"}));
+    }
+    #[test]
+    fn show_json_redacts_the_session_row() {
+        let ctx = Context::from_env();
+        let secret = "ghp_123456789012345678901234567890";
+        let mut session = row();
+        session["first_prompt"] = json!(format!("use {secret}"));
+        let opts = ShowOptions {
+            json: true,
+            ..Default::default()
+        };
+        let out = show(&ctx, &session, &[Event::new("prompt", "hi", None)], &opts).unwrap();
+        assert!(!out.stdout.contains(secret), "{}", out.stdout);
+    }
+    #[test]
+    fn show_json_spill_returns_a_json_locator() {
+        let ctx = Context::from_env();
+        let events = vec![Event::new("assistant", "x".repeat(20001), None)];
+        let opts = ShowOptions {
+            full: true,
+            json: true,
+            ..Default::default()
+        };
+        let out = show(&ctx, &row(), &events, &opts).unwrap();
+        assert_eq!(out.artifacts.len(), 1);
+        assert_eq!(out.artifacts[0].0.extension().unwrap(), "json");
+        let locator: Value = serde_json::from_str(&out.stdout).unwrap();
+        assert_eq!(
+            locator["output"],
+            json!(out.artifacts[0].0.display().to_string())
+        );
+        assert_eq!(locator["chars"], json!(out.artifacts[0].1.chars().count()));
+        assert_eq!(locator["turns_total"], 1);
+        let document: Value = serde_json::from_str(&out.artifacts[0].1).unwrap();
+        assert_eq!(document["session"]["id"], "fixture-session");
+
+        let out = show(
+            &ctx,
+            &row(),
+            &events,
+            &ShowOptions {
+                full_stdout: true,
+                ..opts
+            },
+        )
+        .unwrap();
+        assert!(out.artifacts.is_empty());
+        serde_json::from_str::<Value>(&out.stdout).unwrap();
     }
     #[test]
     fn failures_weights_and_correction_excludes_first_prompt() {

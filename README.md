@@ -177,7 +177,14 @@ matches with or without its `mcp:`, `thread:` or `import:` prefix. When two
 stores match, `show`, `tree` and `handoff` take the session whose own id is the
 full query, and set aside T3 threads that matched only through a provider they
 ran earlier. `show` output over 20,000 characters goes to a file; its path is
-printed in the summary and again as the last line.
+printed in the summary and again as the last line. `show --tools-only` keeps only
+tool calls and their results, shows call ids even in compact mode, and conflicts
+with `--no-tools`; `--full` still selects verbatim inputs and full result bodies.
+`show --json` emits one JSON document containing the session row, `turns_total`,
+and the selected turns with their filtered events. Tool input is a summary string
+unless `--full` selects the redacted raw value. JSON over 20,000 characters spills
+to a `.json` file and prints a JSON locator unless `--full-stdout` or `-o PATH` is
+used.
 
 `--since` and `--until` select sessions by recorded activity: `--since` keeps a
 session whose last timestamped event is at or after the cutoff, and `--until`

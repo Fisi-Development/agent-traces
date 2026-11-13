@@ -218,6 +218,9 @@ enum Command {
         grep: Vec<String>,
         #[arg(long)]
         no_tools: bool,
+        /// Show only tool calls and their results, including call ids
+        #[arg(long, conflicts_with = "no_tools")]
+        tools_only: bool,
         #[arg(long)]
         results: bool,
         #[arg(long)]
@@ -226,6 +229,9 @@ enum Command {
         full: bool,
         #[arg(long)]
         full_stdout: bool,
+        /// Emit the selected turns as one JSON document
+        #[arg(long)]
+        json: bool,
         #[arg(long)]
         t3: bool,
         #[arg(short = 'o', long)]
@@ -1123,10 +1129,12 @@ fn execute_with_writers(
             tail,
             grep,
             no_tools,
+            tools_only,
             results,
             notices,
             full,
             full_stdout,
+            json,
             t3,
             output,
         } => {
@@ -1143,9 +1151,11 @@ fn execute_with_writers(
                     grep: grep.clone(),
                     notices: *notices,
                     tools: !no_tools,
+                    tools_only: *tools_only,
                     full: *full,
                     results: *results,
                     full_stdout: *full_stdout,
+                    json: *json,
                     output: output.clone(),
                 },
             )

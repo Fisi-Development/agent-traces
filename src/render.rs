@@ -346,15 +346,18 @@ pub fn turns_of(events: &[Event]) -> Vec<Vec<Event>> {
     }
     turns
 }
-/// Under `--full`, tool calls and their results carry the call id so a result can be
-/// matched to its call: ` [toolu_…]` after the tool name, ` [toolu_…]` after the arrow.
-fn call_id(full: bool, id: Option<&str>) -> String {
-    match id.filter(|s| full && !s.is_empty()) {
+/// Under `--full` or `--tools-only`, tool calls and their results carry the call id so a
+/// result can be matched to its call: ` [toolu_…]` after the tool name or the arrow.
+fn call_id(show: bool, id: Option<&str>) -> String {
+    match id.filter(|s| show && !s.is_empty()) {
         Some(id) => format!(" [{id}]"),
         None => String::new(),
     }
 }
 pub fn render_event(e: &Event, full: bool, results: bool) -> String {
+    render_event_with_ids(e, full, results, full)
+}
+pub fn render_event_with_ids(e: &Event, full: bool, results: bool, show_ids: bool) -> String {
     let ts = if e.ts.is_some() {
         fmt_ts(e.ts)[11..].to_string()
     } else {
@@ -393,7 +396,7 @@ pub fn render_event(e: &Event, full: bool, results: bool) -> String {
             format!(
                 "{ts}   tool {}{}: {}",
                 e.name.as_deref().unwrap_or("None"),
-                call_id(full, e.id.as_deref()),
+                call_id(show_ids, e.id.as_deref()),
                 redact(&if full {
                     tool_input_verbatim(name, input)
                 } else {
@@ -404,7 +407,7 @@ pub fn render_event(e: &Event, full: bool, results: bool) -> String {
         "result" if e.error || results => format!(
             "{ts}   {}{}{}",
             if e.error { "! tool error" } else { "->" },
-            match call_id(full, e.tool_use_id.as_deref()) {
+            match call_id(show_ids, e.tool_use_id.as_deref()) {
                 id if id.is_empty() && e.error => ": ".to_string(),
                 id if id.is_empty() => " ".to_string(),
                 id if e.error => format!("{id}: "),
