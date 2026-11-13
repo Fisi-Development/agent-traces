@@ -389,7 +389,8 @@ fn stdout(f: &Fixture, args: &[&str]) -> String {
         "{args:?}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).unwrap()
+    // Windows prints CRLF line ends.
+    String::from_utf8(out.stdout).unwrap().replace("\r\n", "\n")
 }
 #[test]
 fn events_fields_print_event_thread_and_payload_values() {
