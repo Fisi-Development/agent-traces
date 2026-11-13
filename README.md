@@ -96,8 +96,9 @@ literal queries in one store discovery. Each JSON line is a group with `query`,
 still get an empty group. Text output labels each group with `Query:`. Limits,
 scope, sorting, hit budgets and `--width` apply to every query. Positional terms
 remain an AND search; they cannot be combined with `-q`. Grouped queries cannot
-be combined with `--ids`, `--count`, or `--schema-version`. Exit 1 means all
-queries missed; exit 0 means at least one matched.
+be combined with `--ids` or `--schema-version`. With `--count`, each query prints
+`<total>\t<query>` on one line. Exit 1 means all queries missed; exit 0 means at
+least one matched.
 
 `agent-traces t3 state THREAD [THREAD ...] --json` reads metadata from the local
 T3 v2 store without transcript output: thread id, title, branch, worktree path,
@@ -113,6 +114,9 @@ run/checkpoint metadata is null; it never guesses between threads.
 From 0.2.24, `t3 threads` lists local thread metadata, newest update first,
 excluding deleted threads unless `--include-deleted` is set. Filter by project,
 creator, source, settled state, archive state, or `--since`, then apply `--limit`.
+Repeat `--title TEXT` for case-insensitive title substrings, keeping any match.
+Select dotted fields with `--fields thread_id,title,latest_run.status`: one
+tab-separated line per thread, or one JSON object per line with `--json`.
 For example, `agent-traces t3 threads --count-by creation_source --json` groups
 threads by creation source, including a null bucket.
 
@@ -125,8 +129,11 @@ T3 indexes events by sequence and by thread, so `--thread` and `--after-seq` are
 fast; a type, actor or time filter without them reads the whole events table,
 which on a multi-gigabyte store takes seconds to minutes.
 Payloads are omitted unless `--payload` is set, then redacted and capped at
-2000 characters. Both commands use a read-only snapshot. Omit `--json` for
-pretty JSON.
+2000 characters. Select event, thread, or payload paths with `--fields`, such as
+`--fields sequence,thread.title,payload.text`: payload paths read the full
+redacted payload without `--payload`, and the cap does not apply to field output.
+Both commands use a read-only snapshot. Omit `--json` for pretty JSON, except
+that `--fields --json` prints one object per row.
 
 `t3 snapshot` returns one object with `threads` and `requests`. It includes
 archived and child threads across all projects, uses `idle` for threads with
@@ -152,8 +159,8 @@ timestamps, parent thread and child thread, but never the task payload.
 | `index` | Bring the `find` index up to date for every Claude, Codex and Grok session, with no time budget |
 | `t3 snapshot --json` | Read all undeleted local threads, latest run state and unique pending request kinds |
 | `t3 summary THREAD --json` | Read the latest user/assistant text for an exact full thread id, redacted and capped at 500 Unicode characters |
-| `t3 threads [filters]` | List thread metadata or group counts with `--count-by` |
-| `t3 events [filters]` | Read orchestration events or group counts with `--count-by` |
+| `t3 threads [filters] [--title TEXT] [--fields a,b.c]` | List or project thread metadata, filter titles, or group counts with `--count-by` |
+| `t3 events [filters] [--fields a,b.c]` | Read or project orchestration events, or group counts with `--count-by` |
 | `t3 tasks [ID ...] [--status S] [--limit N] [--json]` | List delegated tasks or look them up by raw, decoded, or partial id |
 | `t3 state THREAD [THREAD ...] [--fields a,b.c]` | Read T3 v2 branch, worktree, updated_at, latest run and checkpoint metadata |
 | `touched PATH` | Locate recorded file edits |

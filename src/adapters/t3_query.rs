@@ -9,6 +9,40 @@ use anyhow::Result;
 use clap::Args;
 use serde_json::{Value, json};
 
+pub const THREAD_FIELDS: &[&str] = &[
+    "thread_id",
+    "title",
+    "project_id",
+    "created_at",
+    "updated_at",
+    "archived_at",
+    "provider_instance_id",
+    "runtime_mode",
+    "interaction_mode",
+    "settled_at",
+    "unsettled_at",
+    "snoozed_until",
+    "pinned_at",
+    "created_by",
+    "creation_source",
+    "forked_from",
+    "branch",
+    "worktree_path",
+    "pull_requests",
+    "link",
+    "latest_run",
+];
+pub const EVENT_FIELDS: &[&str] = &[
+    "sequence",
+    "occurred_at",
+    "event_type",
+    "aggregate_kind",
+    "stream_id",
+    "actor_kind",
+    "thread",
+    "payload",
+];
+
 #[derive(Args)]
 pub struct ThreadsArgs {
     #[arg(long)]
@@ -29,8 +63,14 @@ pub struct ThreadsArgs {
     pub active: bool,
     #[arg(long)]
     pub include_deleted: bool,
+    /// Keep threads whose title contains TEXT, case-insensitive; repeat to keep any of several
+    #[arg(long, value_name = "TEXT")]
+    pub title: Vec<String>,
     #[arg(long)]
     pub limit: Option<usize>,
+    /// Print comma-separated dotted fields, one tab-separated line or JSON object per thread
+    #[arg(long, value_delimiter = ',', conflicts_with = "count_by")]
+    pub fields: Vec<String>,
     #[arg(long, value_parser = ["created_by", "creation_source", "project_id", "status", "settled", "archived", "provider_instance_id"])]
     pub count_by: Option<String>,
     #[arg(long)]
@@ -57,6 +97,9 @@ pub struct EventsArgs {
     pub limit: usize,
     #[arg(long)]
     pub payload: bool,
+    /// Print comma-separated dotted fields, one tab-separated line or JSON object per event
+    #[arg(long, value_delimiter = ',', conflicts_with = "count_by")]
+    pub fields: Vec<String>,
     #[arg(long, value_parser = ["type", "actor", "thread", "kind", "day", "created_by", "creation_source"])]
     pub count_by: Option<String>,
     #[arg(long)]
@@ -160,6 +203,18 @@ fn count_object(key: &str, mut counts: Vec<Value>) -> Value {
 
 pub fn threads(ctx: &Context, opts: &ThreadsArgs) -> Result<Value> {
     let con = T3::open_v2(ctx)?.ok_or_else(|| anyhow::anyhow!("T3 v2 store not found"))?;
+    // SQLite's lower() folds only ASCII; match titles with Unicode case folding.
+    con.create_scalar_function(
+        "title_contains",
+        2,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |f| {
+            let title = f.get::<Option<String>>(0)?.unwrap_or_default();
+            let needle = f.get::<String>(1)?;
+            Ok(title.to_lowercase().contains(&needle.to_lowercase()))
+        },
+    )?;
     con.execute_batch("BEGIN")?;
     let mut conditions = vec!["1=1".to_owned()];
     let mut args = vec![];
@@ -200,6 +255,13 @@ pub fn threads(ctx: &Context, opts: &ThreadsArgs) -> Result<Value> {
         if no {
             conditions.push(format!("{column} is null"));
         }
+    }
+    if !opts.title.is_empty() {
+        conditions.push(format!(
+            "({})",
+            vec!["title_contains(t.title,?)"; opts.title.len()].join(" or ")
+        ));
+        args.extend(opts.title.iter().map(|title| json!(title)));
     }
     if let Some(key) = &opts.count_by {
         let column = match key.as_str() {
@@ -364,7 +426,15 @@ pub fn events(ctx: &Context, opts: &EventsArgs) -> Result<Value> {
         );
         return Ok(count_object(key, db::query(&con, &sql, &args)?));
     }
-    let payload = if opts.payload { ",e.payload_json" } else { "" };
+    let selected_payload = opts
+        .fields
+        .iter()
+        .any(|field| field == "payload" || field.starts_with("payload."));
+    let payload = if opts.payload || selected_payload {
+        ",e.payload_json"
+    } else {
+        ""
+    };
     let mut sql = format!("select e.sequence,e.occurred_at,e.event_type,e.aggregate_kind,e.stream_id,e.actor_kind,
         t.thread_id as joined_thread_id,t.title,json_extract(t.payload_json,'$.createdBy') as created_by,
         json_extract(t.payload_json,'$.creationSource') as creation_source,t.project_id{payload}
@@ -378,11 +448,11 @@ pub fn events(ctx: &Context, opts: &EventsArgs) -> Result<Value> {
         if !row["joined_thread_id"].is_null() {
             row["thread"] = json!({"title":row["title"],"created_by":row["created_by"],"creation_source":row["creation_source"],"project_id":row["project_id"]});
         }
-        if opts.payload {
+        if opts.payload || selected_payload {
             let mut payload: Value = serde_json::from_str(s(row, "payload_json"))?;
             redact_payload(&mut payload);
             let text = payload.to_string();
-            row["payload"] = if text.chars().count() > 2000 {
+            row["payload"] = if opts.fields.is_empty() && text.chars().count() > 2000 {
                 json!({"truncated":true,"bytes":text.len()})
             } else {
                 payload

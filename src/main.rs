@@ -141,7 +141,7 @@ enum Command {
         #[arg(required_unless_present="query",num_args=1.., conflicts_with="query")]
         terms: Vec<String>,
         /// Run independent literal queries, preserving a group for each query
-        #[arg(short = 'q', long = "query", conflicts_with_all = ["schema_version", "ids", "count"])]
+        #[arg(short = 'q', long = "query", conflicts_with_all = ["schema_version", "ids"])]
         query: Vec<String>,
         #[command(flatten)]
         common: Common,
@@ -416,6 +416,41 @@ fn rows_fields(rows: &[Session], fields: &[String], json: bool) -> String {
         .map(|line| line + "\n")
         .collect()
 }
+fn metadata_field<'a>(row: &'a Value, field: &str) -> &'a Value {
+    field.split('.').fold(row, |value, key| match value {
+        Value::Array(values) => key
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| values.get(index))
+            .unwrap_or(&Value::Null),
+        _ => &value[key],
+    })
+}
+fn metadata_fields(rows: &[Value], fields: &[String], json: bool) -> String {
+    rows.iter()
+        .map(|row| {
+            let values = fields
+                .iter()
+                .map(|field| metadata_field(row, field).clone())
+                .collect::<Vec<_>>();
+            if json {
+                Value::Object(fields.iter().cloned().zip(values).collect()).to_string()
+            } else {
+                values.iter().map(cell).collect::<Vec<_>>().join("\t")
+            }
+        })
+        .map(|line| line + "\n")
+        .collect()
+}
+fn validate_metadata_fields(fields: &[String], allowed: &[&str]) -> Result<()> {
+    for field in fields {
+        let root = field.split('.').next().unwrap();
+        if !allowed.contains(&root) {
+            bail!("unknown field {field:?}; fields: {}", allowed.join(", "));
+        }
+    }
+    Ok(())
+}
 fn ls_counts(
     ctx: &Context,
     rows: &[Session],
@@ -562,8 +597,43 @@ fn execute_with_writers(
         Command::T3 { command } => {
             use agent_traces::adapters::{t3::T3, t3_query};
             let (value, json) = match command {
-                T3Command::Threads(opts) => (t3_query::threads(ctx, opts)?, opts.json),
-                T3Command::Events(opts) => (t3_query::events(ctx, opts)?, opts.json),
+                T3Command::Threads(opts) => {
+                    let allowed = t3_query::THREAD_FIELDS
+                        .iter()
+                        .copied()
+                        .chain(opts.include_deleted.then_some("deleted_at"))
+                        .collect::<Vec<_>>();
+                    validate_metadata_fields(&opts.fields, &allowed)?;
+                    let value = t3_query::threads(ctx, opts)?;
+                    if !opts.fields.is_empty() {
+                        let text = metadata_fields(
+                            value["threads"].as_array().unwrap(),
+                            &opts.fields,
+                            opts.json,
+                        );
+                        return Ok(CommandOutput {
+                            stdout: redact(&text),
+                            ..Default::default()
+                        });
+                    }
+                    (value, opts.json)
+                }
+                T3Command::Events(opts) => {
+                    validate_metadata_fields(&opts.fields, t3_query::EVENT_FIELDS)?;
+                    let value = t3_query::events(ctx, opts)?;
+                    if !opts.fields.is_empty() {
+                        let text = metadata_fields(
+                            value["events"].as_array().unwrap(),
+                            &opts.fields,
+                            opts.json,
+                        );
+                        return Ok(CommandOutput {
+                            stdout: redact(&text),
+                            ..Default::default()
+                        });
+                    }
+                    (value, opts.json)
+                }
                 T3Command::Tasks(opts) => {
                     let value = t3_query::tasks(ctx, opts)?;
                     if !opts.json {
@@ -820,7 +890,10 @@ fn execute_with_writers(
                     let total = result.total;
                     let part = execute_with_writers(ctx, &command, Some(result), stdout, stderr)?;
                     found |= part.exit_code == 0;
-                    let group = if common.format.json {
+                    let group = if *count {
+                        // One row per query: tabs and line breaks in the query become spaces.
+                        format!("{total}\t{}\n", cell(&json!(q)))
+                    } else if common.format.json {
                         let matches = part
                             .stdout
                             .lines()

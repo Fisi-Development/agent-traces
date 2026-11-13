@@ -201,9 +201,24 @@ fn repeated_queries_return_independent_groups_including_misses() {
         serde_json::from_str::<Value>(out.trim()).unwrap(),
         json!({"query":"absent-needle", "total":0, "matches":[]})
     );
-    for extra in ["--ids", "--count"] {
-        assert_eq!(run(t.path(), &["find", "-q", "pelican", extra]).1, 2);
-    }
+    assert_eq!(run(t.path(), &["find", "-q", "pelican", "--ids"]).1, 2);
+    // --count prints each query's total beside it, one tab-separated line per query.
+    assert_eq!(
+        run(
+            t.path(),
+            &["find", "-q", "pelican", "-q", "absent-needle", "--count"]
+        ),
+        ("3\tpelican\n0\tabsent-needle\n".into(), 0)
+    );
+    assert_eq!(
+        run(t.path(), &["find", "-q", "absent-needle", "--count"]),
+        ("0\tabsent-needle\n".into(), 1)
+    );
+    // A tab or line break inside a query cannot split its row.
+    assert_eq!(
+        run(t.path(), &["find", "-q", "absent\tneedle\nx", "--count"]),
+        ("0\tabsent needle x\n".into(), 1)
+    );
 }
 
 #[test]

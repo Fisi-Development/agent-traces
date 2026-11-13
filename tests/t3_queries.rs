@@ -382,3 +382,179 @@ fn queries_require_a_v2_store() {
         assert!(String::from_utf8_lossy(&out.stderr).contains("T3 v2 store not found"));
     }
 }
+fn stdout(f: &Fixture, args: &[&str]) -> String {
+    let out = f.run(args);
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+#[test]
+fn events_fields_print_event_thread_and_payload_values() {
+    let f = Fixture::new();
+    f._writer
+        .execute_batch(
+            "UPDATE orchestration_v2_projection_threads SET title='SPRAWL probe A' WHERE thread_id='thread:a';
+             UPDATE orchestration_v2_projection_threads SET title='Other' WHERE thread_id='thread:b';",
+        )
+        .unwrap();
+    // One tab-separated line per event; payload paths read the payload without
+    // --payload, index arrays by number, stay redacted, and print empty when absent.
+    assert_eq!(
+        stdout(
+            &f,
+            &[
+                "events",
+                "--type",
+                "thread.settled",
+                "--fields",
+                "sequence,stream_id,thread.title,payload.nested.0.secret,payload.text",
+            ],
+        ),
+        "1\tthread:a\tSPRAWL probe A\t<redacted>\tprivate payload marker\n\
+         4\tthread:b\tOther\t\tprivate payload marker\n"
+    );
+    // A selected payload field is not cut by the 2000-character payload bound.
+    assert_eq!(
+        stdout(
+            &f,
+            &[
+                "events",
+                "--type",
+                "thread.created",
+                "--fields",
+                "sequence,payload.large"
+            ],
+        ),
+        format!("2\t{}\n", "界".repeat(2100))
+    );
+    // --json prints one object per event, keyed by the field names given.
+    let lines: Vec<Value> = stdout(
+        &f,
+        &[
+            "events",
+            "--limit",
+            "2",
+            "--fields",
+            "sequence,payload.text",
+            "--json",
+        ],
+    )
+    .lines()
+    .map(|l| serde_json::from_str(l).unwrap())
+    .collect();
+    assert_eq!(
+        lines,
+        [
+            json!({"sequence":1,"payload.text":"private payload marker"}),
+            json!({"sequence":2,"payload.text":null}),
+        ]
+    );
+    let out = f.run(&["events", "--fields", "bogus"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown field \"bogus\""));
+    assert!(
+        !f.run(&["events", "--fields", "sequence", "--count-by", "type"])
+            .status
+            .success()
+    );
+}
+#[test]
+fn threads_title_filter_and_fields() {
+    let f = Fixture::new();
+    f._writer
+        .execute_batch(
+            "UPDATE orchestration_v2_projection_threads SET title='SPRAWL probe A' WHERE thread_id='thread:a';
+             UPDATE orchestration_v2_projection_threads SET title='Other' WHERE thread_id='thread:b';
+             UPDATE orchestration_v2_projection_threads SET title='sprawl deleted' WHERE thread_id='thread:c';",
+        )
+        .unwrap();
+    // --title is a case-insensitive substring; deleted threads stay out by default.
+    assert_eq!(
+        stdout(
+            &f,
+            &[
+                "threads",
+                "--title",
+                "sprawl",
+                "--fields",
+                "thread_id,title,latest_run.status,created_by,pull_requests.0.number",
+            ],
+        ),
+        "thread:a\tSPRAWL probe A\tcompleted\tclient\t42\n"
+    );
+    // Repeating --title keeps a thread matching any of them, newest first.
+    assert_eq!(
+        stdout(
+            &f,
+            &[
+                "threads",
+                "--title",
+                "sprawl",
+                "--title",
+                "oth",
+                "--fields",
+                "thread_id"
+            ],
+        ),
+        "thread:b\nthread:a\n"
+    );
+    // The filter applies to counts too.
+    assert_eq!(
+        f.value(&[
+            "threads",
+            "--title",
+            "sprawl",
+            "--count-by",
+            "created_by",
+            "--json"
+        ])["total"],
+        1
+    );
+    let line: Value = serde_json::from_str(
+        stdout(
+            &f,
+            &[
+                "threads",
+                "--title",
+                "probe",
+                "--fields",
+                "thread_id,settled_at",
+                "--json",
+            ],
+        )
+        .trim(),
+    )
+    .unwrap();
+    assert_eq!(
+        line,
+        json!({"thread_id":"thread:a","settled_at":"2026-10-02T00:00:00Z"})
+    );
+    let out = f.run(&["threads", "--fields", "bogus"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown field \"bogus\""));
+    assert!(
+        !f.run(&["threads", "--fields", "thread_id", "--count-by", "status"])
+            .status
+            .success()
+    );
+}
+#[test]
+fn threads_title_folds_unicode_case() {
+    let f = Fixture::new();
+    f._writer
+        .execute(
+            "UPDATE orchestration_v2_projection_threads SET title='ÉCOLE probe' WHERE thread_id='thread:a'",
+            [],
+        )
+        .unwrap();
+    for needle in ["école", "ÉCOLE", "Probe"] {
+        assert_eq!(
+            stdout(&f, &["threads", "--title", needle, "--fields", "thread_id"]),
+            "thread:a\n",
+            "{needle}"
+        );
+    }
+}
