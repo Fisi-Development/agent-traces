@@ -226,8 +226,7 @@ impl T3 {
         let rows = db::query(con, "
             select t.thread_id, t.title, t.created_at, t.updated_at, t.archived_at,
               t.provider_instance_id, t.payload_json, p.workspace_root,
-              (select max(created_at) from orchestration_v2_projection_messages
-               where thread_id=t.thread_id and role='user') as latest_user_message_at,
+              lm.latest_user_message_at,
               pt.driver, pt.payload_json as provider_payload,
               case when exists(select 1 from orchestration_v2_projection_runs
                 where thread_id=t.thread_id and status in ('preparing','starting','running','waiting'))
@@ -235,6 +234,9 @@ impl T3 {
                 where thread_id=t.thread_id order by ordinal desc limit 1) end as status
             from orchestration_v2_projection_threads t
             left join projection_projects p on p.project_id=t.project_id
+            left join (select thread_id, max(created_at) as latest_user_message_at
+              from orchestration_v2_projection_messages where role='user'
+              group by thread_id) lm on lm.thread_id=t.thread_id
             left join orchestration_v2_projection_provider_threads pt on pt.provider_thread_id=coalesce(
               (select provider_thread_id from orchestration_v2_projection_provider_threads
                where thread_id=t.thread_id and provider_thread_id=t.active_provider_thread_id),
