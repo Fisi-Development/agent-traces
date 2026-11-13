@@ -101,9 +101,15 @@ with a seen uuid. `files.n_events` counts the stored events. The find falls back
 to the transcript when the file's size or mtime differ from the stored ones, when
 the `docs` rows read differ from `n_events`, or on any SQLite error. Hits are
 ordered by BM25, so with the changed corpus statistics their order and the
-`--hits N` cut can differ from the raw scan's; the set of hits does not, apart from the repeated-uuid case below. Case folding in the
-index is Unicode lowercasing; the raw scan folds ASCII only (`src/storage/jsonl.rs`),
-so a non-ASCII case variant matches only through the index.
+`--hits N` cut can differ from the raw scan's; the set of hits does not, apart from the repeated-uuid case below, terms holding a character JSON escapes (a quote, a backslash, a newline), text that only lowercases to an ASCII term, and matches that exist only through the replacement character of an invalid UTF-8 byte. Case folding is
+Unicode lowercasing in both paths. The raw scan's prefilters (`prefilter_candidates_multi`
+in `src/search.rs`, `records` in `src/storage/jsonl.rs`) fold ASCII for an ASCII term; for a
+term with a non-ASCII character the file prefilter keeps every file holding the term in any
+simple case, its lowercase, its uppercase, a `\u` escape or U+0130 (the one character whose lowercase
+expands), the line prefilter keeps lines holding a `\u` escape or whose lossily
+decoded, Unicode-lowercased text contains the term, and the decoded event text decides the
+hit. A term whose lowercase is ASCII stays on the byte prefilter, so non-ASCII text that
+lowercases to ASCII (the Kelvin sign `K`) matches only through the index.
 Claude records that repeat a uuid are deduplicated in both paths, keeping the first, but
 not identically: the raw scan drops lines without a term before it checks uuids, so
 which record claims a uuid depends on the query, and the index keeps the first stored

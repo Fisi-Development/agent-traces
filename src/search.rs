@@ -297,9 +297,24 @@ pub fn prefilter_candidates_multi(
             terms
                 .iter()
                 .map(|t| {
-                    RegexBuilder::new(&regex::escape(t))
-                        .case_insensitive(true)
-                        .build()
+                    // A non-ASCII term may be spelled with JSON `\u` escapes, so a file
+                    // holding one stays a candidate. Simple case folding also misses the
+                    // one character whose Unicode lowercase expands, U+0130 (to `i` and
+                    // U+0307), and letters newer than the regex crate's case tables:
+                    // the term's own lowercase and uppercase and U+0130 itself are
+                    // alternatives too. The line filter and the decoded text then decide.
+                    let pattern = if t.is_ascii() {
+                        regex::escape(t)
+                    } else {
+                        format!(
+                            "{}|{}|{}|\\\\u|{}",
+                            regex::escape(t),
+                            regex::escape(&t.to_lowercase()),
+                            regex::escape(&t.to_uppercase()),
+                            '\u{130}'
+                        )
+                    };
+                    RegexBuilder::new(&pattern).case_insensitive(true).build()
                 })
                 .collect::<std::result::Result<Vec<_>, _>>()
         })

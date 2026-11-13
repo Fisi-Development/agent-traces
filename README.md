@@ -253,16 +253,23 @@ From 0.4.0 the index also stores each event as the adapter produced it, so a
 `find` scores the transcripts it holds current from the index and reads none of
 them. BM25 corpus statistics then cover every in-scope event of those sessions,
 where the raw scan counts only lines that hold a term plus a count of the rest, so
-`_score` and the order of close results can differ between the two paths. For
-terms that are all ASCII the matching sessions and the set of hits per session do
-not differ, apart from the repeated-uuid case below. Hits are ordered by BM25, so their order, and where `--hits N`
+`_score` and the order of close results can differ between the two paths. The
+matching sessions and the set of hits per session do not differ, apart from the
+exceptions below: repeated uuids, terms holding characters JSON escapes, and text that
+only lowercases to an ASCII term. Hits are ordered by BM25, so their order, and where `--hits N`
 truncates, can differ: the same session may show a different N hits.
 
-Indexed finds fold case with Unicode lowercasing. The raw scan (no index, over the
-refresh budget, `AGENT_TRACES_NO_INDEX=1`) folds ASCII only, so a non-ASCII case
-variant (`ÄRGER` for `ärger`) can match only through the index. Claude records that repeat a uuid are deduplicated in both paths, keeping the first, but not identically: the raw scan drops lines without a term before it checks uuids, so which record claims a uuid depends on the query, and the index keeps the first stored record whatever the query. The two differ only when records sharing a uuid differ in content or kind (text, or `isMeta` and other records the index does not store); copies from a resumed session are identical.  Likewise the raw scan tests the JSON line, so a
-term holding a double quote or backslash (escaped there) also matches only through
-the index.
+Both paths fold case with Unicode lowercasing over the decoded text, so `ärger` finds
+`ÄRGER` and a JSON-escaped `\u00c4RGER` with or without the index. The raw scan (no index,
+over the refresh budget, `AGENT_TRACES_NO_INDEX=1`) keeps its byte prefilter for ASCII terms;
+for a term with a non-ASCII character it keeps every file holding the term in any simple case,
+its lowercase, its uppercase, a `\u` escape or `İ`, and every line holding a `\u` escape or whose Unicode-lowercased text contains the term,
+for the decoded check, so it runs about twice as long as an ASCII term. A term whose lowercase
+is ASCII stays on the byte prefilter, so text that only lowercases to it (the Kelvin sign `K` for `k`,
+a `\u`-escaped ASCII letter) matches only through the index. Claude records that repeat a uuid are deduplicated in both paths, keeping the first, but not identically: the raw scan drops lines without a term before it checks uuids, so which record claims a uuid depends on the query, and the index keeps the first stored record whatever the query. The two differ only when records sharing a uuid differ in content or kind (text, or `isMeta` and other records the index does not store); copies from a resumed session are identical.  Likewise the raw scan tests the JSON line, so a
+term holding a double quote, a backslash or a control character such as a newline
+(escaped there), or one that matches only through the replacement character an invalid
+UTF-8 byte decodes to, also matches only through the index.
 
 Legacy `ls --json`, `find --json`, `resolve --json`, and `usage --json` emit JSON Lines. A
 `find --json` line is the session row plus `_score` and `hits` (each `ts`,

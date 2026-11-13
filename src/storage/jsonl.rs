@@ -142,6 +142,15 @@ pub fn records<'a>(
         .map(|n| memchr::memmem::Finder::new(n.as_bytes()).into_owned())
         .collect::<Vec<_>>();
     let filtering = !needles.is_empty() && !any_empty;
+    // A needle with a non-ASCII character is also tried against the line's
+    // Unicode-lowercased text, and a `\u` escape (which can spell it in any
+    // case) sends the line on to decode, where the real matcher decides.
+    let wide = needles
+        .iter()
+        .filter(|n| !n.is_ascii())
+        .map(|n| n.to_lowercase())
+        .collect::<Vec<_>>();
+    let escape = memchr::memmem::Finder::new(b"\\u").into_owned();
     let mut raw = Vec::new();
     let mut lower = Vec::new();
     let mut index = 0;
@@ -167,7 +176,16 @@ pub fn records<'a>(
                 // One reused buffer: ASCII-lowercase the line, then search it.
                 lower.clear();
                 lower.extend(raw.iter().map(u8::to_ascii_lowercase));
-                if !finders.iter().any(|f| f.find(&lower).is_some()) {
+                let keep = finders.iter().any(|f| f.find(&lower).is_some())
+                    || (!wide.is_empty()
+                        && (escape.find(&raw).is_some()
+                            || (!raw.is_ascii() && {
+                                // Lossy, as decode() is: an invalid byte must not hide
+                                // a line the decoded matcher would accept.
+                                let line = String::from_utf8_lossy(&raw).to_lowercase();
+                                wide.iter().any(|n| line.contains(n.as_str()))
+                            })));
+                if !keep {
                     ctx.skipped.set(ctx.skipped.get() + 1);
                     continue;
                 }
@@ -295,6 +313,68 @@ mod tests {
         assert_eq!(kept(&["x".repeat(64)]), (vec![], 4));
         // An empty needle keeps every line, as the raw scan always has.
         assert_eq!(kept(&["".into(), "zzz".into()]), (vec![0, 1, 2, 3], 0));
+    }
+    #[test]
+    fn non_ascii_needles_match_case_variants_and_escapes_like_the_decoded_text() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("u.jsonl");
+        std::fs::write(
+            &p,
+            "{\"s\":\"ÄRGER\"}\n\
+             {\"s\":\"\\u00c4RGER\"}\n\
+             {\"s\":\"\\u00e4rger\"}\n\
+             {\"s\":\"ärger\"}\n\
+             {\"s\":\"plain ASCII only\"}\n\
+             {\"s\":\"Büro ohne das Wort\"}\n",
+        )
+        .unwrap();
+        let ctx = Context::from_env();
+        let kept = |needles: &[String]| {
+            ctx.skipped.set(0);
+            let lines = records(&ctx, &p, 0, Some(needles))
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>();
+            (lines, ctx.skipped.get())
+        };
+        // Upper case, both escape spellings and lower case all survive; a line
+        // with neither the word nor an escape is skipped, non-ASCII or not.
+        assert_eq!(kept(&["ärger".into()]), (vec![0, 1, 2, 3], 2));
+    }
+    #[test]
+    fn a_non_ascii_needle_keeps_a_line_with_an_invalid_byte_as_decode_does() {
+        // decode() replaces an invalid byte, and the matcher then sees ÄRGER, so
+        // the prefilter must not drop the line for failing strict UTF-8.
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("bad.jsonl");
+        std::fs::write(
+            &p,
+            b"{\"s\":\"\xc3\x84RGER\xff\"}\n{\"s\":\"other \xff\"}\n",
+        )
+        .unwrap();
+        let ctx = Context::from_env();
+        ctx.skipped.set(0);
+        let lines = records(&ctx, &p, 0, Some(&["ärger".into()]))
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        assert_eq!((lines, ctx.skipped.get()), (vec![0], 1));
+    }
+    #[test]
+    fn ascii_needles_keep_the_byte_scan() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("a.jsonl");
+        std::fs::write(
+            &p,
+            "{\"s\":\"RELEASE stall\"}\n{\"s\":\"\\u0072elease stall\"}\n{\"s\":\"Ärger\"}\n{\"s\":\"other\"}\n",
+        )
+        .unwrap();
+        let ctx = Context::from_env();
+        let got = records(&ctx, &p, 0, Some(&["release stall".into()]))
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        // Upper case matches; an escaped ASCII letter, a non-ASCII line and an
+        // unrelated line are skipped without decoding.
+        assert_eq!(got, vec![0]);
+        assert_eq!(ctx.skipped.get(), 3);
     }
     #[test]
     fn an_unterminated_last_record_is_named_as_such() {

@@ -238,21 +238,18 @@ fn the_index_answers_what_the_raw_scan_answers() {
     for args in cases {
         compare_with_raw(home, args, false);
     }
-    // Non-ASCII terms: see `compare_with_raw`. `ärger` is the named example, as
-    // the raw scan cannot find the `ÄRGER im Büro` session.
+    // Non-ASCII terms: the raw scan folds case with Unicode rules, so it finds
+    // `ÄRGER im Büro` and the escaped spelling exactly as the index does.
     for term in ["ärger", "ÄRGER", "Ärger"] {
-        compare_with_raw(home, &[term, "--in", "prompts"], true);
+        compare_with_raw(home, &[term, "--in", "prompts"], false);
+        let ids = raw(home, &["find", term, "--in", "prompts", "--ids"]).stdout;
+        assert!(ids.contains(C4), "{term}: {ids}");
     }
     // A term with a double quote: the raw scan tests the JSON line, which escapes
     // the quote, so it misses what the index (which stores the text) finds.
     compare_with_raw(home, &["\"quoted phrase\"", "--in", "prompts"], true);
     let named = run(home, &["find", "ärger", "--in", "prompts", "--ids"]);
     assert!(named.stdout.contains(C4), "{}", named.stdout);
-    assert!(
-        !raw(home, &["find", "ärger", "--in", "prompts", "--ids"])
-            .stdout
-            .contains(C4)
-    );
     assert_eq!(named.code, 0);
     // The cross-event and 2-character cases really matched something.
     let two = run(
@@ -299,12 +296,77 @@ fn the_index_answers_what_the_raw_scan_answers() {
     );
 }
 
+#[test]
+fn the_raw_scan_finds_a_word_written_with_json_escapes_as_the_index_does() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    claude(
+        home,
+        C1,
+        &[user(0, "plain prompt"), assistant(1, "unrelated")],
+    );
+    // serde_json writes UTF-8, so the escaped spellings are written by hand.
+    let line = |ts: usize, text: &str| {
+        format!(
+            "{{\"type\":\"user\",\"uuid\":\"e{ts}\",\"cwd\":\"/w\",\"timestamp\":\"2026-10-01T09:{ts:02}:00Z\",\"message\":{{\"content\":\"{text}\"}}}}\n"
+        )
+    };
+    for (id, text) in [
+        (C2, "viel \\u00c4RGER"),
+        (C3, "viel \\u00e4rger"),
+        (C4, "viel \\u00C4rger"),
+    ] {
+        fs::write(
+            home.join(format!(".claude/projects/w/{id}.jsonl")),
+            line(0, text),
+        )
+        .unwrap();
+    }
+    for term in ["ärger", "ÄRGER"] {
+        compare_with_raw(home, &[term, "--in", "prompts"], false);
+        let ids = raw(home, &["find", term, "--in", "prompts", "--ids"]).stdout;
+        assert!(
+            ids.contains(C2) && ids.contains(C3) && ids.contains(C4) && !ids.contains(C1),
+            "{term}: {ids}"
+        );
+    }
+}
+
+#[test]
+fn the_raw_scan_keeps_files_whose_lowercase_matches_only_after_expansion() {
+    // `İ` lowercases to `i` plus U+0307, which simple case folding does not equate.
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    claude(home, C1, &[user(0, "plain prompt")]);
+    claude(home, C2, &[user(0, "nach \u{130}stanbul")]);
+    claude(home, C3, &[user(0, "nach i\u{307}stanbul")]);
+    for term in ["\u{130}stanbul", "i\u{307}stanbul"] {
+        compare_with_raw(home, &[term, "--in", "prompts"], false);
+        let ids = raw(home, &["find", term, "--in", "prompts", "--ids"]).stdout;
+        assert!(
+            ids.contains(C2) && ids.contains(C3) && !ids.contains(C1),
+            "{term}: {ids}"
+        );
+    }
+}
+
+#[test]
+fn the_raw_scan_keeps_letters_newer_than_the_regex_case_tables() {
+    // Rust lowercases U+A7D2 to U+A7D3 (Unicode 17); the regex crate's simple case
+    // folding does not pair them yet, so the term's uppercase is an alternative too.
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path();
+    claude(home, C1, &[user(0, "plain prompt")]);
+    claude(home, C2, &[user(0, "double thorn \u{a7d2}")]);
+    for term in ["\u{a7d3}", "\u{a7d2}"] {
+        compare_with_raw(home, &[term, "--in", "prompts"], false);
+        let ids = raw(home, &["find", term, "--in", "prompts", "--ids"]).stdout;
+        assert!(ids.contains(C2) && !ids.contains(C1), "{term}: {ids}");
+    }
+}
+
 /// Matches and hits equal the raw scan's, scores dropped. With `superset`, the
-/// indexed matches need only contain the raw ones: the index folds case with
-/// Unicode lowercasing, while the raw scan's line prefilter folds ASCII only
-/// (`src/storage/jsonl.rs`, `to_ascii_lowercase`), so it misses a non-ASCII case
-/// variant such as `ÄRGER` for `ärger`. Accepted by the owner; the index is the
-/// reference.
+/// indexed matches need only contain the raw ones.
 fn compare_with_raw(home: &Path, args: &[&str], superset: bool) {
     {
         let mut full = vec!["find"];
