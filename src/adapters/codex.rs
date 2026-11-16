@@ -139,7 +139,112 @@ impl Codex {
             .chars()
             .rev()
             .collect::<String>();
-        json!({"harness":"codex","home":ctx.tilde(home),"id":if db::truth(&meta["id"]){meta["id"].clone()}else{json!(fallback)},"parent":meta["parent_thread_id"],"kind":"unindexed","cwd":meta["cwd"],"title":null,"first_prompt":null,"started":meta["timestamp"],"updated":null,"model":null,"path":path.to_string_lossy(),"originator":meta["originator"]})
+        let updated = crate::adapters::claude::mtime(path)
+            .map(|t| json!(crate::util::iso(t)))
+            .unwrap_or(Value::Null);
+        // Persona subagents name the parent at the top; spawned threads only
+        // under `source.subagent.thread_spawn` (as `children` reads them).
+        let parent = if db::truth(&meta["parent_thread_id"]) {
+            meta["parent_thread_id"].clone()
+        } else {
+            meta["source"]["subagent"]["thread_spawn"]["parent_thread_id"].clone()
+        };
+        json!({"harness":"codex","home":ctx.tilde(home),"id":if db::truth(&meta["id"]){meta["id"].clone()}else{json!(fallback)},"parent":parent,"kind":"unindexed","cwd":meta["cwd"],"title":null,"first_prompt":null,"started":meta["timestamp"],"updated":updated,"model":null,"path":path.to_string_lossy(),"originator":meta["originator"]})
+    }
+    /// Every rollout under a home's `sessions/` (by day) and
+    /// `archived_sessions/`, one file per transcript: a `.jsonl.zst` only
+    /// when no plain `.jsonl` sits beside it, as the reader prefers the plain
+    /// file.
+    fn rollout_files(home: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for (root, depth) in [
+            (home.join("sessions"), 4),
+            (home.join("archived_sessions"), 1),
+        ] {
+            for entry in walkdir::WalkDir::new(root)
+                .min_depth(depth)
+                .max_depth(depth)
+                .follow_links(true)
+                .into_iter()
+                .filter_map(std::result::Result::ok)
+            {
+                let name = entry.file_name().to_string_lossy();
+                let plain = name.ends_with(".jsonl");
+                if entry.file_type().is_file()
+                    && name.starts_with("rollout-")
+                    && (plain
+                        || name.ends_with(".jsonl.zst")
+                            && !entry.path().with_extension("").is_file())
+                {
+                    out.push(entry.into_path());
+                }
+            }
+        }
+        out
+    }
+    /// One spelling per transcript: the `.jsonl` name (a `.zst` sibling is
+    /// the same transcript), its folder canonical, case-folded on Windows.
+    fn transcript(ctx: &Context, raw: &Path) -> String {
+        let p = ctx.expand(&raw.to_string_lossy());
+        let p = match p.to_string_lossy().strip_suffix(".zst") {
+            Some(plain) => PathBuf::from(plain),
+            None => p,
+        };
+        // A bare or relative name has an empty or relative parent that
+        // cannot canonicalize; anchor it first, as the walk's paths are.
+        let p = std::path::absolute(&p).unwrap_or(p);
+        let p = match (p.parent(), p.file_name()) {
+            (Some(dir), Some(name)) => std::fs::canonicalize(dir)
+                .map(|d| d.join(name))
+                .unwrap_or(p.clone()),
+            _ => p,
+        };
+        let p = p.to_string_lossy().into_owned();
+        if cfg!(windows) { p.to_lowercase() } else { p }
+    }
+    /// The transcripts every home's `state_5.sqlite` indexes, and the ids of
+    /// indexed threads whose recorded file is gone (moved, so a rollout with
+    /// that id elsewhere is the same thread).
+    fn indexed(ctx: &Context, homes: &[PathBuf]) -> (HashSet<String>, HashSet<String>) {
+        let (mut paths, mut stale) = (HashSet::new(), HashSet::new());
+        for home in homes {
+            let index = home.join("state_5.sqlite");
+            if index.exists()
+                && let Ok(con) = db::open(ctx, "codex", &index)
+                && let Ok(rows) = db::query(&con, "select id,rollout_path from threads", &[])
+            {
+                for r in rows {
+                    let path = ctx.expand(s(&r, "rollout_path"));
+                    if !jsonl::exists(&path) {
+                        stale.insert(s(&r, "id").to_owned());
+                    }
+                    paths.insert(Self::transcript(ctx, &path));
+                }
+            }
+        }
+        (paths, stale)
+    }
+    /// Rollouts in `home` that no home's index names (Codex never indexed
+    /// them, or the home has no index), last written at or after `since`.
+    /// A different transcript under an indexed id still lists, as
+    /// `one_row_per_transcript` keeps it. Listing read only the index before
+    /// 0.4.11, so `ls` and `usage --since` missed them while a lookup by id
+    /// found them.
+    fn unindexed(
+        ctx: &Context,
+        home: &Path,
+        since: Option<DateTime<Utc>>,
+        (paths, stale): &(HashSet<String>, HashSet<String>),
+    ) -> Vec<Session> {
+        Self::rollout_files(home)
+            .into_iter()
+            .filter(|p| {
+                since.is_none_or(|t| crate::adapters::claude::mtime(p).is_none_or(|m| m >= t))
+            })
+            .filter(|p| !paths.contains(&Self::transcript(ctx, p)))
+            .map(|p| Self::from_rollout(ctx, home, &p))
+            .filter(|r| !stale.contains(s(r, "id")))
+            .collect()
     }
 }
 impl StoreAdapter for Codex {
@@ -212,15 +317,21 @@ impl StoreAdapter for Codex {
         subagents: bool,
     ) -> Result<Vec<Session>> {
         let mut out = Vec::new();
-        for home in self.homes(ctx) {
+        let homes = self.homes(ctx);
+        let indexed = Self::indexed(ctx, &homes);
+        for home in homes {
             out.extend(if let Some(t) = since {
                 self.rows(ctx, &home, "where updated_at >= ?", &[json!(t.timestamp())])?
             } else {
                 self.rows(ctx, &home, "", &[])?
             });
+            out.extend(Self::unindexed(ctx, &home, since, &indexed));
         }
         if !subagents {
-            out.retain(|r| s(r, "kind") != "subagent");
+            out.retain(|r| {
+                s(r, "kind") != "subagent"
+                    && !(s(r, "kind") == "unindexed" && db::truth(&r["parent"]))
+            });
         }
         Ok(one_row_per_transcript(ctx, out))
     }
@@ -229,25 +340,10 @@ impl StoreAdapter for Codex {
         for home in self.homes(ctx) {
             let mut rows = self.rows(ctx, &home, "where id like ?", &[json!(format!("{id}%"))])?;
             if rows.is_empty() {
-                for (root, depth) in [
-                    (home.join("sessions"), 4),
-                    (home.join("archived_sessions"), 1),
-                ] {
-                    for entry in walkdir::WalkDir::new(root)
-                        .min_depth(depth)
-                        .max_depth(depth)
-                        .follow_links(true)
-                        .into_iter()
-                        .filter_map(std::result::Result::ok)
-                    {
-                        let name = entry.file_name().to_string_lossy();
-                        if entry.file_type().is_file()
-                            && name.starts_with("rollout-")
-                            && (name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
-                            && name[8..].contains(id)
-                        {
-                            rows.push(Self::from_rollout(ctx, &home, entry.path()));
-                        }
+                for path in Self::rollout_files(&home) {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    if name[8..].contains(id) {
+                        rows.push(Self::from_rollout(ctx, &home, &path));
                     }
                 }
             }
@@ -656,6 +752,135 @@ mod database_tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0]["home"], ctx.tilde(&owner));
         assert_eq!(rows[0]["title"], ".codex-work");
+    }
+    #[test]
+    fn listing_includes_rollouts_the_index_lacks_within_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join(".codex");
+        let day = home.join("sessions/2026/11/16");
+        std::fs::create_dir_all(&day).unwrap();
+        let indexed = "019eb9ff-338d-79e2-8be3-8444bb8fb0aa";
+        let missing = "019eb9ff-338d-79e2-8be3-8444bb8fb0bb";
+        let indexed_path = day.join(format!("rollout-2026-11-16T10-00-00-{indexed}.jsonl"));
+        std::fs::write(&indexed_path, "{}\n").unwrap();
+        index_thread(&home, indexed, &indexed_path);
+        std::fs::write(
+            day.join(format!("rollout-2026-11-16T10-05-00-{missing}.jsonl")),
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{missing}\",\"cwd\":\"/repo\",\"timestamp\":\"2026-11-16T10:05:00Z\"}}}}\n"),
+        )
+        .unwrap();
+        let mut ctx = Context::from_env();
+        ctx.home = dir.path().into();
+        let ids = |rows: Vec<Session>| {
+            rows.iter()
+                .map(|r| s(r, "id").to_owned())
+                .collect::<Vec<_>>()
+        };
+        // Full listing: the indexed thread once, the unindexed rollout once.
+        let all = ids(Codex.sessions(&ctx, None, false).unwrap());
+        assert_eq!(all.iter().filter(|i| *i == indexed).count(), 1, "{all:?}");
+        assert_eq!(all.iter().filter(|i| *i == missing).count(), 1, "{all:?}");
+        // A window that the file's last write falls in still lists it, with
+        // that write as its last activity.
+        let since = Utc::now() - chrono::Duration::hours(1);
+        let rows = Codex.sessions(&ctx, Some(since), false).unwrap();
+        let row = rows.iter().find(|r| r["id"] == missing).expect("windowed");
+        assert_eq!(row["kind"], "unindexed");
+        assert!(
+            parse_ts(&row["updated"]).is_some_and(|t| t >= since),
+            "{row}"
+        );
+        // A window after the last write leaves it out.
+        let later = Utc::now() + chrono::Duration::hours(1);
+        assert!(
+            !ids(Codex.sessions(&ctx, Some(later), false).unwrap()).contains(&missing.to_owned())
+        );
+        // An unindexed subagent rollout lists only with subagents.
+        let child = "019eb9ff-338d-79e2-8be3-8444bb8fb0cc";
+        std::fs::write(
+            day.join(format!("rollout-2026-11-16T10-06-00-{child}.jsonl")),
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{child}\",\"parent_thread_id\":\"{missing}\"}}}}\n"),
+        )
+        .unwrap();
+        assert!(!ids(Codex.sessions(&ctx, None, false).unwrap()).contains(&child.to_owned()));
+        assert!(ids(Codex.sessions(&ctx, None, true).unwrap()).contains(&child.to_owned()));
+        // Another home's index naming this home's file keeps the indexed row.
+        let other = dir.path().join(".codex-work");
+        let shared = "019eb9ff-338d-79e2-8be3-8444bb8fb0dd";
+        let shared_path = day.join(format!("rollout-2026-11-16T10-08-00-{shared}.jsonl"));
+        std::fs::write(&shared_path, "{}\n").unwrap();
+        index_thread(&other, shared, &shared_path);
+        let rows = Codex.sessions(&ctx, None, false).unwrap();
+        let hits = rows
+            .iter()
+            .filter(|r| r["id"] == shared)
+            .collect::<Vec<_>>();
+        assert_eq!(hits.len(), 1, "{rows:?}");
+        assert_eq!(hits[0]["title"], ".codex-work");
+        // A spawned thread names its parent only under source.subagent.
+        let spawned = "019eb9ff-338d-79e2-8be3-8444bb8fb0ee";
+        std::fs::write(
+            day.join(format!("rollout-2026-11-16T10-09-00-{spawned}.jsonl")),
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{spawned}\",\"source\":{{\"subagent\":{{\"thread_spawn\":{{\"parent_thread_id\":\"{missing}\"}}}}}}}}}}\n"),
+        )
+        .unwrap();
+        assert!(!ids(Codex.sessions(&ctx, None, false).unwrap()).contains(&spawned.to_owned()));
+        let rows = Codex.sessions(&ctx, None, true).unwrap();
+        let row = rows.iter().find(|r| r["id"] == spawned).expect("listed");
+        assert_eq!(row["parent"], missing);
+        // A plain rollout and its compressed sibling are one transcript.
+        let twin = "019eb9ff-338d-79e2-8be3-8444bb8fb0ff";
+        let twin_path = day.join(format!("rollout-2026-11-16T10-10-00-{twin}.jsonl"));
+        std::fs::write(
+            &twin_path,
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{twin}\"}}}}\n"),
+        )
+        .unwrap();
+        {
+            use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+            let body = format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{twin}\"}}}}\n");
+            std::fs::write(
+                twin_path.with_extension("jsonl.zst"),
+                compress_to_vec(body.as_bytes(), CompressionLevel::Fastest),
+            )
+            .unwrap();
+        }
+        let rows = Codex.sessions(&ctx, None, false).unwrap();
+        let hits = rows.iter().filter(|r| r["id"] == twin).collect::<Vec<_>>();
+        assert_eq!(hits.len(), 1, "{rows:?}");
+        assert!(s(hits[0], "path").ends_with(".jsonl"), "{:?}", hits[0]);
+        // A different transcript under an indexed id still lists, in full and
+        // in a window the indexed row falls outside of.
+        let old = dir.path().join(".codex-old");
+        let old_day = old.join("archived_sessions");
+        std::fs::create_dir_all(&old_day).unwrap();
+        let first = old_day.join(format!("rollout-2026-01-01T00-00-00-{missing}.jsonl"));
+        std::fs::write(&first, "{}\n").unwrap();
+        index_thread(&old, missing, &first);
+        let rows = Codex.sessions(&ctx, None, false).unwrap();
+        assert_eq!(
+            rows.iter().filter(|r| r["id"] == missing).count(),
+            2,
+            "{rows:?}"
+        );
+        let rows = Codex.sessions(&ctx, Some(since), false).unwrap();
+        let hits = rows
+            .iter()
+            .filter(|r| r["id"] == missing)
+            .collect::<Vec<_>>();
+        assert_eq!(hits.len(), 1, "{rows:?}");
+        assert_eq!(hits[0]["kind"], "unindexed");
+    }
+    #[test]
+    fn a_bare_rollout_name_keys_like_the_walked_path() {
+        let ctx = Context::from_env();
+        let name = "rollout-2026-11-16T10-00-00-019eb9ff-338d-79e2-8be3-8444bb8fb0aa.jsonl";
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(
+            Codex::transcript(&ctx, Path::new(name)),
+            Codex::transcript(&ctx, &here.join(name))
+        );
+        assert!(Path::new(&Codex::transcript(&ctx, Path::new(name))).is_absolute());
     }
     #[test]
     fn unindexed_rollout_has_legacy_absent_keys() {
