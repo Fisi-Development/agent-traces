@@ -40,7 +40,9 @@ pub fn session(ctx: &Context, id: &str) -> Result<(Value, Vec<Value>)> {
     Ok(extract(ctx, &row, t3_thread))
 }
 
-fn extract(ctx: &Context, row: &Session, t3_thread: Value) -> (Value, Vec<Value>) {
+/// One session row's usage, from its own transcript. A window read calls this
+/// once per row from `core::gather` instead of resolving ids one at a time.
+pub fn extract(ctx: &Context, row: &Session, t3_thread: Value) -> (Value, Vec<Value>) {
     let finalized = core::legacy_row(row);
     let mut call_rows = Vec::new();
     let wall = parse_ts(&row["started"])

@@ -239,7 +239,7 @@ enum Command {
     },
     /// Token usage, API calls and wall time for sessions
     Usage {
-        #[arg(required = true)]
+        /// Session ids; with none, every session active in --since
         ids: Vec<String>,
         #[arg(long)]
         calls: bool,
@@ -247,6 +247,9 @@ enum Command {
         since: Option<String>,
         #[arg(long)]
         until: Option<String>,
+        /// Comma-separated: claude, codex, opencode, grok (no ids only; a T3 thread's usage is its provider session's)
+        #[arg(long)]
+        harness: Option<String>,
         /// Keep calls whose dedupe_key repeats across the ids (for callers that dedupe across batches)
         #[arg(long)]
         keep_duplicates: bool,
@@ -1076,9 +1079,26 @@ fn execute_with_writers(
             calls,
             since,
             until,
+            harness,
             keep_duplicates,
             format,
         } => {
+            if !ids.is_empty() && harness.is_some() {
+                bail!("--harness only applies when usage reads a window without ids");
+            }
+            if harness
+                .as_deref()
+                .is_some_and(|h| h.split(',').any(|n| n.trim() == "t3"))
+            {
+                bail!(
+                    "usage --harness t3: a T3 thread has no transcript of its own; its provider session (claude, codex or opencode) carries the usage"
+                );
+            }
+            if ids.is_empty() && since.is_none() {
+                bail!(
+                    "usage: give session ids, or --since to read every session active in the window"
+                );
+            }
             let since = since
                 .as_deref()
                 .map(|s| parse_since(s, ctx.now))
@@ -1087,10 +1107,36 @@ fn execute_with_writers(
                 .as_deref()
                 .map(|s| parse_since(s, ctx.now))
                 .transpose()?;
-            let sessions = ids
-                .iter()
-                .map(|id| agent_traces::usage::session(ctx, id))
-                .collect::<Result<Vec<_>>>()?;
+            let sessions = if ids.is_empty() {
+                // One pass over every store, then one transcript read per session:
+                // resolving ids one at a time walks every store per id.
+                let filters = Filters {
+                    harness: harness.clone(),
+                    cwd: None,
+                    since,
+                    until,
+                    subagents: true,
+                };
+                let mut gathered = core::gather(ctx, &filters)?;
+                // A T3 row is a thread, not a transcript; its provider session is
+                // in the same list, so counting both would add empty rows.
+                gathered.retain(|row| s(row, "harness") != "t3");
+                // Earliest first, so cross-session dedupe keeps the same copy every run.
+                gathered.sort_by(|a, b| {
+                    parse_ts(&a["started"])
+                        .cmp(&parse_ts(&b["started"]))
+                        .then_with(|| s(a, "harness").cmp(s(b, "harness")))
+                        .then_with(|| s(a, "id").cmp(s(b, "id")))
+                });
+                gathered
+                    .iter()
+                    .map(|row| agent_traces::usage::extract(ctx, row, row["t3_thread"].clone()))
+                    .collect::<Vec<_>>()
+            } else {
+                ids.iter()
+                    .map(|id| agent_traces::usage::session(ctx, id))
+                    .collect::<Result<Vec<_>>>()?
+            };
             let mut rows = Vec::new();
             let mut stderr = String::new();
             let mut seen = std::collections::HashSet::new();

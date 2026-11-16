@@ -168,7 +168,7 @@ timestamps, parent thread and child thread, but never the task payload.
 | `failures` | Rank errors and user corrections |
 | `prompts` | Export user-typed turns as redacted JSON Lines |
 | `show ID` | Render a transcript or selected turns |
-| `usage ID... [--json]` | Per-session token usage, API calls and wall time for Claude, Codex and OpenCode, including T3 provider transcripts |
+| `usage [ID...] [--json]` | Per-session token usage, API calls and wall time for Claude, Codex and OpenCode, including T3 provider transcripts; with no ids, every session active in `--since` |
 | `resolve ID` | Resolve full IDs and prefixes |
 | `tree ID` | List recorded child sessions |
 | `handoff ID` | Extract a handoff draft |
@@ -237,6 +237,13 @@ repeated calls across the requested ids are counted only in the first session,
 including when a T3 thread and its provider id name the same transcript.
 `--keep-duplicates` (from 0.2.39) skips that cross-id step and leaves `duplicates_dropped`
 at 0, for callers that batch ids and drop repeated `(harness, dedupe_key)` pairs themselves.
+
+From 0.4.10 `usage` takes no ids: with `--since` it lists every session active in
+the window through the same one-pass store walk `ls` uses (subagent sessions
+included, since their calls are real spend), reads each transcript once, drops
+T3 thread rows (their provider session is in the same list), and runs the same
+window, dedupe and output code as the ids form. `--harness` narrows it as for
+`ls`; `--since` is required, and `--harness` is refused with ids.
 
 `usage ID... --calls` emits one row per call. After `tools`, call rows include
 `dedupe_key`, `speed` (`standard`, `fast`, or `ultrafast`) and `reported_cost_usd`

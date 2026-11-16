@@ -156,6 +156,105 @@ fn missing_id_fails_atomically() {
     assert!(out.stdout.is_empty());
 }
 
+#[test]
+fn window_usage_reads_every_session_once_without_ids() {
+    let home = fixture();
+    // A second Claude session, outside the window: reading the window must not
+    // touch it, and it must not appear in the answer.
+    write(
+        &claude_path(home.path(), "usage-claude-old"),
+        vec![
+            json!({"type":"user","cwd":"/fixture","timestamp":"2026-10-01T08:00:00Z","message":{"content":"old"}}),
+            json!({"type":"assistant","timestamp":"2026-10-01T08:00:10Z","message":{"id":"old","model":"fixture-model","usage":{"input_tokens":1000,"output_tokens":2000}}}),
+        ],
+    );
+    let got = rows(run(
+        home.path(),
+        &["usage", "--since", "2026-11-01", "--json"],
+    ));
+    assert_eq!(
+        got.iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [CLAUDE, CODEX],
+        "both in-window sessions once each, the old one absent"
+    );
+    for (row, id, calls, tokens) in [
+        (0, CLAUDE, 2, [6, 12, 18, 24, 60]),
+        (1, CODEX, 2, [80, 120, 0, 50, 250]),
+    ] {
+        assert_eq!(got[row]["id"], id);
+        assert_eq!(got[row]["calls"], calls);
+        assert_eq!(got[row]["duplicates_dropped"], 0);
+        for (key, expected) in [
+            ("input_tokens", tokens[0]),
+            ("cache_read_tokens", tokens[1]),
+            ("cache_write_tokens", tokens[2]),
+            ("output_tokens", tokens[3]),
+            ("total_tokens", tokens[4]),
+        ] {
+            assert_eq!(got[row][key], expected, "{id} {key}");
+        }
+        assert!(got[row]["window"]["since"].is_string());
+        assert!(got[row]["window"]["until"].is_null());
+    }
+    // Call rows work in this mode too: two calls per session, in session order.
+    let calls = rows(run(
+        home.path(),
+        &["usage", "--since", "2026-11-01", "--calls", "--json"],
+    ));
+    assert_eq!(calls.len(), 4);
+    assert_eq!(calls[0]["id"], CLAUDE);
+    assert_eq!(calls[1]["id"], CLAUDE);
+    assert_eq!(calls[2]["id"], CODEX);
+    assert_eq!(calls[3]["id"], CODEX);
+    // Text output keeps its columns.
+    let out = run(home.path(), &["usage", "--since", "2026-11-01"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        text.lines().collect::<Vec<_>>(),
+        [
+            "id\tharness\tcalls\tinput\tcache_read\tcache_write\toutput\treasoning\ttotal\twall_s",
+            "usage-claude\tclaude\t2\t6\t12\t18\t24\t\t60\t90",
+            "usage-codex\tcodex\t2\t80\t120\t0\t50\t7\t250\t90",
+        ]
+    );
+}
+
+#[test]
+fn window_usage_needs_since_without_ids_and_refuses_harness_with_ids() {
+    let home = fixture();
+    let out = run(home.path(), &["usage", "--json"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr).trim(),
+        "usage: give session ids, or --since to read every session active in the window"
+    );
+    assert!(out.stdout.is_empty());
+    let out = run(
+        home.path(),
+        &["usage", CLAUDE, "--harness", "claude", "--json"],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    // A T3 thread's usage is its provider session's: a t3-only window would be empty.
+    let out = run(
+        home.path(),
+        &[
+            "usage",
+            "--since",
+            "2026-10-01",
+            "--harness",
+            "codex,t3",
+            "--json",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("provider session"));
+    assert!(out.stdout.is_empty());
+}
+
 fn t3(home: &Path) {
     let path = home.join(".t3/userdata/state.sqlite");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
