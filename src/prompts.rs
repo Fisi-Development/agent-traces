@@ -32,11 +32,21 @@ fn guard_classifier_cwd(cwd: &str) -> bool {
         .ends_with("/.agent-guard/llm-cwd")
 }
 
+fn redact_and_clip(text: &str, max_chars: usize) -> String {
+    let redacted = redact(text);
+    if redacted.chars().count() > max_chars && max_chars > 0 {
+        redacted.chars().take(max_chars - 1).collect::<String>() + "…"
+    } else {
+        redacted.chars().take(max_chars).collect()
+    }
+}
+
 pub fn collect(
     ctx: &Context,
     filters: &Filters,
     max_chars: usize,
     include_machine: bool,
+    with_previous: bool,
 ) -> Result<Vec<Value>> {
     // Gather before filtering so a harness filter cannot hide its T3 provenance.
     core::gather(
@@ -133,7 +143,7 @@ pub fn collect(
                 continue;
             };
             row["t3_thread"] = json!(id);
-            T3::user_turns(ctx, thread)?
+            T3::prompt_messages(ctx, thread, with_previous)?
         } else {
             core::adapter(&harness)?.prompt_events(ctx, &row)?
         };
@@ -143,7 +153,12 @@ pub fn collect(
             || matches!(s(&row, "originator"), "agent" | "delegate" | "telepathica");
         let classifier = guard_classifier_cwd(s(&row, "cwd"));
         let mut turn = 0;
+        let mut previous = None;
         for event in events {
+            if with_previous && event.role == "assistant" && !event.text.trim().is_empty() {
+                previous = Some(event.text);
+                continue;
+            }
             let Some((text, excluded)) = event.user_turn else {
                 continue;
             };
@@ -176,16 +191,19 @@ pub fn collect(
                 continue;
             }
             let chars = text.chars().count();
-            let redacted = redact(&text);
-            let clipped = if redacted.chars().count() > max_chars && max_chars > 0 {
-                redacted.chars().take(max_chars - 1).collect::<String>() + "…"
-            } else {
-                redacted.chars().take(max_chars).collect()
-            };
-            output.push(json!({"address":core::address(&row), "harness":harness, "host":core::local_host(),
+            let clipped = redact_and_clip(&text, max_chars);
+            let mut prompt = json!({"address":core::address(&row), "harness":harness, "host":core::local_host(),
                 "time":time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true), "cwd":row["cwd"],
                 "t3_thread":thread_id, "turn":index, "origin":if machine { "machine" } else if thread_id.is_some() { "t3" } else { "heuristic" },
-                "text":clipped,"chars":chars}));
+                "text":clipped,"chars":chars});
+            if with_previous {
+                prompt["previous"] = json!(
+                    previous
+                        .as_deref()
+                        .map(|text| redact_and_clip(text, max_chars))
+                );
+            }
+            output.push(prompt);
         }
     }
     output.sort_by(|a, b| {

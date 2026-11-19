@@ -2,6 +2,7 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 const TIME: &str = "2026-11-03T12:00:00Z";
+const ASSISTANT_TEXT: &str = "é🙂 reply sk-abcdefghijklmnopqrstuvwxyz";
 fn jsonl(path: &Path, records: Vec<Value>) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
@@ -53,7 +54,11 @@ fn fixture(harness: &str) -> tempfile::TempDir {
     match harness {
         "claude" => {
             let mut records: Vec<_> = texts.iter().map(|t| json!({"type":"user","cwd":"/fixture","timestamp":TIME,"message":{"content":t}})).collect();
-            records.push(json!({"type":"user","timestamp":TIME,"message":{"content":[{"type":"tool_result","tool_use_id":"tool","content":"tool result"}]}}));
+            records.splice(1..1, [
+                json!({"type":"assistant","timestamp":TIME,"message":{"content":[{"type":"text","text":"earlier reply"}]}}),
+                json!({"type":"assistant","timestamp":TIME,"message":{"content":[{"type":"text","text":ASSISTANT_TEXT},{"type":"tool_use","id":"tool","name":"Read","input":{"file_path":"/fixture"}}]}}),
+                json!({"type":"user","timestamp":TIME,"message":{"content":[{"type":"tool_result","tool_use_id":"tool","content":"tool result"}]}}),
+            ]);
             jsonl(
                 &home.join(".claude/projects/fixture/session-claude.jsonl"),
                 records,
@@ -64,7 +69,12 @@ fn fixture(harness: &str) -> tempfile::TempDir {
                 json!({"type":"session_meta","payload":{"id":"session-codex","cwd":"/fixture","timestamp":TIME}}),
             ];
             records.extend(texts.iter().map(|t| json!({"type":"response_item","timestamp":TIME,"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":t}]}})));
-            records.push(json!({"type":"response_item","timestamp":TIME,"payload":{"type":"function_call_output","output":"tool result","call_id":"tool"}}));
+            records.splice(2..2, [
+                json!({"type":"response_item","timestamp":TIME,"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"earlier reply"}]}}),
+                json!({"type":"response_item","timestamp":TIME,"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":ASSISTANT_TEXT}]}}),
+                json!({"type":"response_item","timestamp":TIME,"payload":{"type":"function_call","name":"read","arguments":"{}","call_id":"tool"}}),
+                json!({"type":"response_item","timestamp":TIME,"payload":{"type":"function_call_output","output":"tool result","call_id":"tool"}}),
+            ]);
             let path = home.join(".codex/sessions/2026/11/03/rollout-session-codex.jsonl");
             jsonl(&path, records);
             let con = Connection::open(home.join(".codex/state_5.sqlite")).unwrap();
@@ -103,6 +113,38 @@ fn fixture(harness: &str) -> tempfile::TempDir {
     }
     dir
 }
+
+fn assert_previous(home: &Path, harness: &str) {
+    let defaults = run(home, &["--harness", harness]);
+    let mut rows = run(home, &["--harness", harness, "--with-previous"]);
+    assert_eq!(rows.len(), 2, "{harness}: {rows:?}");
+    assert_eq!(
+        rows[0].as_object_mut().unwrap().remove("previous"),
+        Some(Value::Null)
+    );
+    assert_eq!(
+        rows[1].as_object_mut().unwrap().remove("previous"),
+        Some(json!("é🙂 reply <redacted>"))
+    );
+    assert_eq!(
+        rows, defaults,
+        "{harness}: default rows have no previous key"
+    );
+    let clipped = run(
+        home,
+        &["--harness", harness, "--with-previous", "--max-chars", "3"],
+    );
+    assert_eq!(clipped[1]["previous"], "é🙂…");
+}
+
+#[test]
+fn previous_assistant_text_in_provider_sessions() {
+    for harness in ["claude", "codex"] {
+        let dir = fixture(harness);
+        assert_previous(dir.path(), harness);
+    }
+}
+
 #[test]
 fn all_harnesses_filter_machine_turns_and_keep_audit_indices() {
     for harness in ["claude", "codex", "grok", "opencode"] {
@@ -152,9 +194,11 @@ CREATE TABLE projection_projects(project_id TEXT,workspace_root TEXT);
 CREATE TABLE orchestration_v2_projection_provider_threads(provider_thread_id TEXT,thread_id TEXT,updated_at TEXT,payload_json TEXT,driver TEXT);
 CREATE TABLE orchestration_v2_projection_runs(thread_id TEXT,ordinal INTEGER,status TEXT);
 CREATE TABLE orchestration_v2_projection_messages(thread_id TEXT,role TEXT,created_at TEXT,payload_json TEXT);
+CREATE TABLE orchestration_v2_projection_turn_items(thread_id TEXT,type TEXT,status TEXT,updated_at TEXT,payload_json TEXT);
 INSERT INTO projection_projects VALUES('project','/fixture');
 INSERT INTO orchestration_v2_projection_threads VALUES('thread','project','Test','provider','2026-11-03T12:00:00Z','2026-11-03T12:00:00Z',NULL,NULL,'{}',NULL);
-INSERT INTO orchestration_v2_projection_provider_threads VALUES('provider','thread','2026-11-03T12:00:00Z','{\"nativeThreadRef\":{\"nativeId\":\"session-claude\"}}','claudeAgent');").unwrap();
+INSERT INTO orchestration_v2_projection_provider_threads VALUES('provider','thread','2026-11-03T12:00:00Z','{\"nativeThreadRef\":{\"nativeId\":\"session-claude\"}}','claudeAgent');
+INSERT INTO orchestration_v2_projection_turn_items VALUES('thread','command_execution','completed','2026-11-03T12:00:00Z','{\"title\":\"read\",\"text\":\"tool result\"}');").unwrap();
         let driver = if harness == "claude" {
             "claudeAgent"
         } else {
@@ -168,14 +212,18 @@ INSERT INTO orchestration_v2_projection_provider_threads VALUES('provider','thre
             ],
         )
         .unwrap();
-        for (text, by, source) in [
-            ("typed via client", "user", "web"),
-            ("injected via MCP", "user", "mcp"),
-            ("agent launch", "agent", "web"),
+        for (role, text, by, source) in [
+            ("user", "typed via client", "user", "web"),
+            ("assistant", "earlier reply", "agent", "web"),
+            ("assistant", ASSISTANT_TEXT, "agent", "web"),
+            ("user", "injected via MCP", "user", "mcp"),
+            ("user", "agent launch", "agent", "web"),
+            ("user", "typed follow-up", "user", "web"),
         ] {
             con.execute(
-                "INSERT INTO orchestration_v2_projection_messages VALUES('thread','user',?,?)",
+                "INSERT INTO orchestration_v2_projection_messages VALUES('thread',?,?,?)",
                 params![
+                    role,
                     TIME,
                     json!({"text":text,"createdBy":by,"creationSource":source}).to_string()
                 ],
@@ -183,13 +231,13 @@ INSERT INTO orchestration_v2_projection_provider_threads VALUES('provider','thre
             .unwrap();
         }
         let rows = run(dir.path(), &[]);
-        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0]["origin"], "t3");
         assert_eq!(rows[0]["text"], "typed via client");
         assert_eq!(rows[0]["address"], "t3:thread@fixture-host");
-        assert_eq!(run(dir.path(), &["--include-machine"]).len(), 3);
-        assert_eq!(run(dir.path(), &["--harness", harness]).len(), 1);
-        assert_eq!(run(dir.path(), &["--harness", "t3"]).len(), 1);
+        assert_eq!(run(dir.path(), &["--include-machine"]).len(), 4);
+        assert_previous(dir.path(), harness);
+        assert_previous(dir.path(), "t3");
         con.execute(
             "UPDATE orchestration_v2_projection_provider_threads SET payload_json=?",
             [json!({"nativeThreadRef":{"nativeId":"replacement-provider"}}).to_string()],
@@ -197,7 +245,7 @@ INSERT INTO orchestration_v2_projection_provider_threads VALUES('provider','thre
         .unwrap();
         con.execute("INSERT INTO orchestration_v2_projection_provider_threads VALUES('historical','thread',?,?,?)",params![TIME,json!({"nativeThreadRef":{"nativeId":format!("session-{harness}")}}).to_string(),driver]).unwrap();
         let historical = run(dir.path(), &["--harness", harness]);
-        assert_eq!(historical.len(), 1);
+        assert_eq!(historical.len(), 2);
         assert_eq!(historical[0]["origin"], "t3");
     }
 }

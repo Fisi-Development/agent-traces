@@ -130,6 +130,9 @@ enum Command {
         max_chars: usize,
         #[arg(long)]
         include_machine: bool,
+        /// Include preceding assistant text; Grok and OpenCode may have no text
+        #[arg(long)]
+        with_previous: bool,
     },
     Find {
         /// Keep an exact launch surface; repeat for several, or use none for unstamped sessions
@@ -732,9 +735,16 @@ fn execute_with_writers(
             common,
             max_chars,
             include_machine,
+            with_previous,
         } => {
             let filters = common.filters(ctx, Some("7d"))?;
-            let rows = agent_traces::prompts::collect(ctx, &filters, *max_chars, *include_machine)?;
+            let rows = agent_traces::prompts::collect(
+                ctx,
+                &filters,
+                *max_chars,
+                *include_machine,
+                *with_previous,
+            )?;
             Ok(CommandOutput {
                 stdout: rows.into_iter().map(|r| r.to_string() + "\n").collect(),
                 ..Default::default()

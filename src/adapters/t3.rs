@@ -9,6 +9,13 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::{collections::HashSet, path::PathBuf};
+
+enum MessageScope {
+    Transcript,
+    Prompts,
+    PromptsWithPrevious,
+}
+
 pub struct T3;
 impl T3 {
     pub(crate) fn prompt_links(ctx: &Context) -> Result<Vec<Value>> {
@@ -22,7 +29,11 @@ impl T3 {
         )
     }
 
-    pub(crate) fn user_turns(ctx: &Context, row: &Session) -> Result<Vec<Event>> {
+    pub(crate) fn prompt_messages(
+        ctx: &Context,
+        row: &Session,
+        with_previous: bool,
+    ) -> Result<Vec<Event>> {
         let v2 = s(row, "path").starts_with(&format!("{}#thread=", ctx.tilde(&Self::path_v2(ctx))));
         let path = if v2 {
             Self::path_v2(ctx)
@@ -30,24 +41,63 @@ impl T3 {
             Self::path(ctx)
         };
         let con = db::open(ctx, "t3", &path)?;
-        let sql = if v2 {
-            "select created_at,payload_json from orchestration_v2_projection_messages where thread_id=? and role='user' order by created_at,rowid"
+        let scope = if with_previous {
+            MessageScope::PromptsWithPrevious
         } else {
-            "select created_at,text from projection_thread_messages where thread_id=? and role='user' order by created_at,rowid"
+            MessageScope::Prompts
         };
-        db::query(&con, sql, &[row["id"].clone()])?
+        Ok(Self::message_events(&con, row, v2, scope)?
+            .into_iter()
+            .map(|(_, event)| event)
+            .collect())
+    }
+
+    fn message_events(
+        con: &rusqlite::Connection,
+        row: &Session,
+        v2: bool,
+        scope: MessageScope,
+    ) -> Result<Vec<(String, Event)>> {
+        let query = if v2 {
+            "select role,created_at,payload_json from orchestration_v2_projection_messages where thread_id=?"
+        } else {
+            "select role,text,created_at from projection_thread_messages where thread_id=?"
+        };
+        let suffix = match scope {
+            MessageScope::Transcript if v2 => " and role in ('user','assistant')",
+            MessageScope::Transcript => "",
+            MessageScope::Prompts => " and role='user' order by created_at,rowid",
+            MessageScope::PromptsWithPrevious => {
+                " and role in ('user','assistant') order by created_at,rowid"
+            }
+        };
+        db::query(con, &format!("{query}{suffix}"), &[row["id"].clone()])?
             .into_iter()
             .map(|m| {
-                let data: Value = if v2 {
-                    serde_json::from_str(s(&m, "payload_json"))?
+                let user = s(&m, "role") == "user";
+                let prompt = user && !matches!(scope, MessageScope::Transcript);
+                let payload: Value = if v2 {
+                    let parsed = serde_json::from_str(s(&m, "payload_json"));
+                    if prompt {
+                        parsed?
+                    } else {
+                        parsed.unwrap_or(Value::Null)
+                    }
                 } else {
-                    m.clone()
+                    Value::Null
                 };
-                let typed = data["createdBy"] == "user"
-                    && matches!(s(&data, "creationSource"), "web" | "desktop" | "mobile");
-                let mut event = Event::new("prompt", s(&data, "text"), parse_ts(&m["created_at"]));
-                event.user_turn = Some((event.text.clone(), !typed));
-                Ok(event)
+                let data = if v2 { &payload } else { &m };
+                let mut event = Event::new(
+                    if user { "prompt" } else { "assistant" },
+                    s(data, "text"),
+                    parse_ts(&m["created_at"]),
+                );
+                if prompt {
+                    let typed = data["createdBy"] == "user"
+                        && matches!(s(data, "creationSource"), "web" | "desktop" | "mobile");
+                    event.user_turn = Some((event.text.clone(), !typed));
+                }
+                Ok((s(&m, "created_at").into(), event))
             })
             .collect()
     }
@@ -283,33 +333,12 @@ impl T3 {
         let path = Self::path_v2(ctx);
         let con = db::open(ctx, "t3", &path)?;
         let result = (|| -> Result<Vec<(String, Event)>> {
-            let msgs = db::query(
-                &con,
-                "select role,created_at,payload_json from orchestration_v2_projection_messages where thread_id=? and role in ('user','assistant')",
-                &[row["id"].clone()],
-            )?;
+            let mut events = Self::message_events(&con, row, true, MessageScope::Transcript)?;
             let items = db::query(
                 &con,
                 "select type,status,updated_at,payload_json from orchestration_v2_projection_turn_items where thread_id=? and (type='error' or (type in ('command_execution','dynamic_tool','file_change','file_search','web_search') and status in ('completed','failed')))",
                 &[row["id"].clone()],
             )?;
-            let mut events = Vec::new();
-            for m in msgs {
-                let data: Value =
-                    serde_json::from_str(s(&m, "payload_json")).unwrap_or(Value::Null);
-                events.push((
-                    s(&m, "created_at").into(),
-                    Event::new(
-                        if s(&m, "role") == "user" {
-                            "prompt"
-                        } else {
-                            "assistant"
-                        },
-                        s(&data, "text"),
-                        parse_ts(&m["created_at"]),
-                    ),
-                ));
-            }
             for item in items {
                 let data: Value =
                     serde_json::from_str(s(&item, "payload_json")).unwrap_or(Value::Null);
@@ -464,31 +493,12 @@ impl StoreAdapter for T3 {
         let path = Self::path(ctx);
         let con = db::open(ctx, "t3", &path)?;
         let result = (|| -> Result<Vec<(String, Event)>> {
-            let msgs = db::query(
-                &con,
-                "select role,text,created_at from projection_thread_messages where thread_id=?",
-                &[row["id"].clone()],
-            )?;
+            let mut events = Self::message_events(&con, row, false, MessageScope::Transcript)?;
             let acts = db::query(
                 &con,
                 "select kind,summary,payload_json,created_at from projection_thread_activities where thread_id=? and kind in ('tool.completed','runtime.error','tool.denied','context-compaction','runtime.warning')",
                 &[row["id"].clone()],
             )?;
-            let mut events = Vec::new();
-            for m in msgs {
-                events.push((
-                    s(&m, "created_at").into(),
-                    Event::new(
-                        if s(&m, "role") == "user" {
-                            "prompt"
-                        } else {
-                            "assistant"
-                        },
-                        s(&m, "text"),
-                        parse_ts(&m["created_at"]),
-                    ),
-                ));
-            }
             for a in acts {
                 let kind = s(&a, "kind");
                 let ts = parse_ts(&a["created_at"]);

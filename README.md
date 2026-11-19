@@ -84,6 +84,8 @@ not proof of a human author. Turns without a timestamp are skipped with a
 diagnostic. T3 messages are emitted once per thread, without duplicating their
 provider transcript. Legacy T3 messages without provenance appear only in the
 machine audit.
+`--with-previous` adds `previous`, the preceding assistant text with the same
+redaction and clipping as `text`, or `null` when no assistant text is available.
 
 From 0.2.12, `agent-traces commit REV --repo DIR --json` reports read-only local
 session evidence for a commit, with paired tool results, repository comparison,
