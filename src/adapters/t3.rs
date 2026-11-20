@@ -403,11 +403,18 @@ pub fn provider_id(driver: &str, cursor: &str, thread: &str) -> Value {
     match driver {
         "claudeAgent" => cur["resume"].clone(),
         "codex" => cur["threadId"].clone(),
-        _ => ["sessionId", "sessionID", "session_id", "resume", "threadId"]
-            .into_iter()
-            .map(|k| cur[k].clone())
-            .find(|v| db::truth(v) && v.as_str() != Some(thread))
-            .unwrap_or(Value::Null),
+        _ => [
+            "sessionId",
+            "sessionID",
+            "session_id",
+            "conversationId",
+            "resume",
+            "threadId",
+        ]
+        .into_iter()
+        .map(|k| cur[k].clone())
+        .find(|v| db::truth(v) && v.as_str() != Some(thread))
+        .unwrap_or(Value::Null),
     }
 }
 impl StoreAdapter for T3 {

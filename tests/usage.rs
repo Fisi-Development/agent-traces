@@ -380,7 +380,7 @@ fn absent_usage_is_zero_and_unsupported_harness_is_null() {
     assert_eq!(got[1]["reasoning_tokens"], 0);
     assert_eq!(
         got[2]["note"],
-        "usage is read for claude, codex and opencode sessions only"
+        "usage is read for claude, codex, opencode and antigravity sessions only"
     );
     assert!(got[2]["calls"].is_null());
 }

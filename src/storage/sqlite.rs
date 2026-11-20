@@ -4,12 +4,41 @@ use rusqlite::{Connection, OpenFlags, params_from_iter, types::ValueRef};
 use serde_json::{Map, Value};
 use std::{path::Path, time::Duration};
 pub fn open(ctx: &Context, harness: &str, path: &Path) -> Result<Connection> {
+    open_read_only(ctx, harness, path, false)
+}
+
+pub fn open_without_idle_sidecars(ctx: &Context, harness: &str, path: &Path) -> Result<Connection> {
+    let immutable = ["-wal", "-shm"].iter().all(|suffix| {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        matches!(Path::new(&sidecar).try_exists(), Ok(false))
+    });
+    open_read_only(ctx, harness, path, immutable)
+}
+
+fn open_read_only(
+    ctx: &Context,
+    harness: &str,
+    path: &Path,
+    immutable: bool,
+) -> Result<Connection> {
     ctx.protect_source(path);
     let result = (|| {
-        let con = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        if immutable {
+            let absolute = std::path::absolute(path)?;
+            let encoded = percent_encoding::percent_encode(
+                absolute.as_os_str().as_encoded_bytes(),
+                percent_encoding::NON_ALPHANUMERIC,
+            );
+            let uri = format!("file:{encoded}?immutable=1");
+            // Immutable connections bypass WAL bookkeeping and report journal_mode=delete.
+            return Ok(Connection::open_with_flags(
+                uri,
+                flags | OpenFlags::SQLITE_OPEN_URI,
+            )?);
+        }
+        let con = Connection::open_with_flags(path, flags)?;
         con.busy_timeout(Duration::from_secs(10))?;
         let mode: String = con.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
         if !mode.eq_ignore_ascii_case("wal") {

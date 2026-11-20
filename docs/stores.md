@@ -59,6 +59,14 @@ Surveyed 2026-09-23 on the author's machines; the counts and dates below come fr
 - **Real prompts.** `type == "user"` with a non-null `prompt_index`; the text sits inside `<user_query>`. Other user records are injected rules, skills, and reminders.
 - **Traps.** `session_search.sqlite` indexes a small stale fraction of sessions. Subagents run inline as `spawn_subagent` tool calls. `chat_history.jsonl` has no per-record timestamps; `events.jsonl` has timing.
 
+## Antigravity
+
+- **Homes.** Standalone CLI/IDE stores live at `~/.gemini/antigravity-cli` and `~/.gemini/antigravity`; T3 Code isolated profiles live at `~/.t3/userdata/providers/antigravity/<hash>/antigravity-acp`.
+- **Metadata index.** `<home>/conversation_summaries.db` (WAL SQLite, read-only): table `conversation_summaries` (`conversation_id`, `title`, `preview`, `workspace_uris` as a JSON array of `file://` URIs, `last_modified_time`, `parent_conversation_id`, `status`).
+- **Transcript.** `<home>/brain/<conversation_id>/.system_generated/logs/transcript.jsonl` (compact) alongside `transcript_full.jsonl` (untruncated). Records carry `step_index`, `source`, `type` (`USER_INPUT`, `PLANNER_RESPONSE`, `GENERIC`, `SYSTEM_MESSAGE`), `created_at`, `content`, `model`, `tool_calls`, `truncated_fields`, and token counts (`input_tokens`, `cache_read_tokens`, `output_tokens`, `thinking_tokens`). `find`, its index, and the `touched` prefilter prefer `transcript_full.jsonl` when present. `show` uses the full transcript to expand compact steps marked with `truncated_fields`.
+- **IDE coverage.** IDE conversations stored only in `<home>/conversations/*.pb` do not appear in session listings. `agent-traces where` reports how many `.pb` conversations lack a JSONL transcript.
+- **Subagents.** Child conversations link to their parent via `parent_conversation_id` in `conversation_summaries`.
+
 ## Stores without an adapter
 
 - **Cursor** (last used May 2026). IDE chats: `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`, table `cursorDiskKV`, keys `composerData:<id>` (session) and `bubbleId:<id>:<bubble>` (messages); trust the embedded `createdAt`, not file mtimes. cursor-agent CLI: `~/.cursor/projects/*/agent-transcripts/*.jsonl`.

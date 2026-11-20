@@ -6,7 +6,7 @@
 //! `search_candidates` keeps, so it can replace the raw-file prefilter, which is
 //! only a superset of that rule. A file the index cannot vouch for is scanned raw.
 use crate::{
-    adapters::{claude, codex, grok},
+    adapters::{antigravity, claude, codex, grok},
     context::Context,
     model::{Diagnostic, Event, Session},
     storage::jsonl,
@@ -32,7 +32,7 @@ const TAIL_BYTES: u64 = 4096;
 const DEFAULT_BUDGET_MS: u64 = 8000;
 /// Harnesses whose transcripts the index stores. OpenCode and T3 keep SQL
 /// stores with their own search paths.
-const HARNESSES: [&str; 3] = ["claude", "codex", "grok"];
+const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "antigravity"];
 /// Roles the index stores: the roles of the `prompts` and `assistant` scopes.
 const INDEXED_ROLES: [&str; 3] = ["prompt", "command", "assistant"];
 
@@ -73,13 +73,16 @@ pub struct Index {
     conn: Connection,
 }
 
-/// What an adapter can say about its transcript lines. All three adapters turn
+const ANTIGRAVITY_FULL_MODE: &str = "append-antigravity-full";
+
+/// What an adapter can say about its transcript lines. These adapters turn
 /// each record into events without state carried across lines (Claude's uuid
 /// dedup only removes duplicates, and the index keeps them), so a tail parsed
 /// from a byte offset yields exactly the tail of a full parse.
-fn mode_for(harness: &str) -> &'static str {
+fn mode_for(harness: &str, has_full_transcript: bool) -> &'static str {
     match harness {
-        "claude" | "codex" | "grok" => "append",
+        "antigravity" if has_full_transcript => ANTIGRAVITY_FULL_MODE,
+        "claude" | "codex" | "grok" | "antigravity" => "append",
         _ => "full",
     }
 }
@@ -89,6 +92,7 @@ fn record_events(harness: &str, record: &Value) -> Vec<crate::model::Event> {
         "claude" => claude::record_events(record),
         "codex" => codex::codex_event(record).into_iter().collect(),
         "grok" => grok::event_records(record),
+        "antigravity" => antigravity::event_records(record),
         _ => vec![],
     }
 }
@@ -329,7 +333,10 @@ impl Index {
         path: &Path,
         allow_work: bool,
     ) -> Result<Status> {
-        let real = jsonl::locate(path);
+        let full = (harness == "antigravity")
+            .then(|| antigravity::full_transcript(path))
+            .flatten();
+        let real = jsonl::locate(full.as_deref().unwrap_or(path));
         let meta = match std::fs::metadata(&real) {
             Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Status::Gone),
@@ -341,24 +348,24 @@ impl Index {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_nanos() as i64);
+        // A compressed rollout cannot be read from an offset. Different Antigravity
+        // modes keep a cached compact transcript from standing in for a full one.
+        let compressed = jsonl::is_compressed(&real);
+        let mode = if compressed {
+            "full"
+        } else {
+            mode_for(harness, full.is_some())
+        };
         let before = Self::stored(&self.conn, key)?;
         if before
             .as_ref()
-            .is_some_and(|b| b.size == size && b.mtime_ns == mtime_ns)
+            .is_some_and(|b| b.mode == mode && b.size == size && b.mtime_ns == mtime_ns)
         {
             return Ok(Status::Current);
         }
         if !allow_work {
             return Ok(Status::Skipped);
         }
-        // A compressed rollout cannot be read from an offset: reindex it whole.
-        // Decided from the resolved file's own extension, never from its path.
-        let compressed = jsonl::is_compressed(&real);
-        let mode = if compressed {
-            "full"
-        } else {
-            mode_for(harness)
-        };
         // A changed (size, mtime) is an append only when the file grew past its
         // stored size and the bytes ending at the stored offset are the ones
         // indexed. Comparing with the stored size, not the offset, matters when a
@@ -370,8 +377,8 @@ impl Index {
         let (start, replace) = match &before {
             None => (0, true),
             Some(b)
-                if b.mode == "append"
-                    && !compressed
+                if b.mode == mode
+                    && mode != "full"
                     && size > b.size
                     && size > b.offset
                     && tail_matches(&real, b.offset as u64, &b.tail_hash) =>
@@ -405,7 +412,9 @@ impl Index {
         let now = Self::stored(&tx, key)?;
         let same = match (&before, &now) {
             (None, None) => true,
-            (Some(a), Some(b)) => (a.size, a.mtime_ns, a.offset) == (b.size, b.mtime_ns, b.offset),
+            (Some(a), Some(b)) => {
+                (a.size, a.mtime_ns, a.offset, &a.mode) == (b.size, b.mtime_ns, b.offset, &b.mode)
+            }
             _ => false,
         };
         if !same {
@@ -465,8 +474,12 @@ impl Index {
 
     fn report_issues(&self, ctx: &Context, key: &str) -> Result<()> {
         if let Some(stored) = Self::stored(&self.conn, key)? {
+            let mut path = ctx.expand(key);
+            if stored.mode == ANTIGRAVITY_FULL_MODE {
+                path.set_file_name("transcript_full.jsonl");
+            }
             for (offset, message) in stored.issues {
-                ctx.malformed_record(None, &ctx.expand(key), offset, message);
+                ctx.malformed_record(None, &path, offset, message);
             }
         }
         Ok(())

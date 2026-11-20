@@ -36,6 +36,7 @@ pub trait StoreAdapter {
 }
 // The parent adds module declarations and registry after parallel adapters land.
 
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod grok;

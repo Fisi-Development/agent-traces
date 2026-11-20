@@ -43,6 +43,7 @@ pub fn adapters() -> Vec<Box<dyn StoreAdapter>> {
         Box::new(crate::adapters::t3::T3),
         Box::new(crate::adapters::opencode::OpenCode),
         Box::new(crate::adapters::grok::Grok),
+        Box::new(crate::adapters::antigravity::Antigravity),
     ]
 }
 pub fn adapter(name: &str) -> Result<Box<dyn StoreAdapter>> {

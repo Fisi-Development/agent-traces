@@ -120,11 +120,79 @@ pub fn extract(ctx: &Context, row: &Session, t3_thread: Value) -> (Value, Vec<Va
         out["calls"] = json!(call_rows.len());
         return (out, call_rows);
     }
+    if harness == "antigravity" {
+        if !jsonl::exists(&ctx.expand(s(row, "path"))) {
+            out["note"] = json!("transcript not found");
+            return (out, call_rows);
+        }
+        let n = |value: &Value, key: &str| value[key].as_u64().unwrap_or(0);
+        let keys = [
+            "input_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+        ];
+        for key in keys {
+            out[key] = json!(0);
+        }
+        for (_, record) in jsonl::records(ctx, &ctx.expand(s(row, "path")), 0, None) {
+            if s(&record, "type") != "PLANNER_RESPONSE" {
+                continue;
+            }
+            let input = n(&record, "input_tokens");
+            let cached = n(&record, "cache_read_tokens");
+            let output = n(&record, "output_tokens");
+            let reasoning = n(&record, "thinking_tokens");
+            let total = record["total_tokens"]
+                .as_u64()
+                .unwrap_or(input + cached + output + reasoning);
+            if total == 0 && record["input_tokens"].is_null() && record["output_tokens"].is_null() {
+                continue;
+            }
+            let ts = parse_ts(&record["created_at"])
+                .map(|ts| ts.to_rfc3339_opts(SecondsFormat::AutoSi, true));
+            let model = record["model"]
+                .as_str()
+                .filter(|m| !m.is_empty())
+                .map_or_else(|| row["model"].clone(), |id| json!(id));
+            let tools = record["tool_calls"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|tc| tc["name"].as_str())
+                .map(|name| json!(name))
+                .collect::<Vec<_>>();
+            let call = json!({
+                "id": row["id"],
+                "harness": harness,
+                "ts": ts,
+                "model": model,
+                "input_tokens": input,
+                "cache_read_tokens": cached,
+                "cache_write_tokens": 0,
+                "output_tokens": output,
+                "reasoning_tokens": reasoning,
+                "total_tokens": total,
+                "tools": tools,
+                "dedupe_key": null,
+                "speed": "standard",
+                "reported_cost_usd": null,
+            });
+            for key in keys {
+                out[key] = json!(n(&out, key) + n(&call, key));
+            }
+            call_rows.push(call);
+        }
+        out["calls"] = json!(call_rows.len());
+        return (out, call_rows);
+    }
     if !["claude", "codex"].contains(&harness) {
         out["note"] = json!(if harness == "t3" {
             "provider transcript not found"
         } else {
-            "usage is read for claude, codex and opencode sessions only"
+            "usage is read for claude, codex, opencode and antigravity sessions only"
         });
         return (out, call_rows);
     }

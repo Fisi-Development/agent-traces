@@ -40,7 +40,7 @@ impl Format {
 }
 #[derive(Args, Clone, Default)]
 struct Common {
-    /// Comma-separated: claude, codex, t3, opencode, grok
+    /// Comma-separated: claude, codex, t3, opencode, grok, antigravity
     #[arg(long)]
     harness: Option<String>,
     /// Keep sessions whose cwd contains DIR, case-insensitive; `.` means here and below
@@ -81,7 +81,7 @@ impl Common {
 #[derive(Subcommand)]
 enum Command {
     Where,
-    /// Bring the find index up to date for every claude, codex and grok session
+    /// Bring the find index up to date for every claude, codex, grok and antigravity session
     Index {
         #[command(flatten)]
         common: Common,

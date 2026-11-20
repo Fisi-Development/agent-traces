@@ -1388,3 +1388,82 @@ fn malformed_persisted_issues_are_stale_and_replaced_without_duplicate_events() 
     }
     assert_eq!(fs::read(&path).unwrap(), source);
 }
+
+#[test]
+fn antigravity_find_uses_the_full_transcript_in_the_index_and_raw_scan() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let logs =
+        home.join(".gemini/antigravity-cli/brain/antigravity-fixture/.system_generated/logs");
+    fs::create_dir_all(&logs).unwrap();
+    let compact = logs.join("transcript.jsonl");
+    let full = logs.join("transcript_full.jsonl");
+    let compact_event = json!({
+        "step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE",
+        "created_at": NOW, "content": "compact-marker", "truncated_fields": ["content"]
+    });
+    let full_event = json!({
+        "step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE",
+        "created_at": NOW, "content": "expanded-marker",
+        "tool_calls": [{"id": "write-1", "name": "write_file", "args": {"path": "notes.md"}}]
+    });
+    fs::write(&compact, lines(&[compact_event])).unwrap();
+
+    let compact_query = ["find", "compact-marker", "--in", "assistant", "--ids"];
+    let full_query = ["find", "expanded-marker", "--in", "assistant", "--ids"];
+    let assert_hit = |out: Out| {
+        assert_eq!(out.code, 0, "{}\n{}", out.stdout, out.stderr);
+        assert!(out.stdout.contains("antigravity-fixture"), "{}", out.stdout);
+    };
+    assert_hit(run(home, &compact_query));
+    assert_hit(raw(home, &compact_query));
+
+    fs::write(&full, lines(&[full_event])).unwrap();
+    assert_hit(raw(home, &full_query));
+    let first = run(home, &full_query);
+    assert!(
+        first.stderr.contains("1 refreshed now, 0 scanned raw"),
+        "{}",
+        first.stderr
+    );
+    assert_hit(first);
+    let cached = run(home, &full_query);
+    assert!(
+        cached
+            .stderr
+            .contains("1 indexed, 0 refreshed now, 0 scanned raw"),
+        "{}",
+        cached.stderr
+    );
+    assert_hit(cached);
+    assert_hit(run(home, &["touched", "notes.md"]));
+
+    fs::remove_file(full).unwrap();
+    assert_eq!(run(home, &full_query).code, 1);
+    assert_hit(run(home, &compact_query));
+}
+
+#[test]
+fn where_counts_antigravity_pb_conversations_without_jsonl() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let store = home.join(".gemini/antigravity");
+    let logs = store.join("brain/exported/.system_generated/logs");
+    fs::create_dir_all(&logs).unwrap();
+    fs::write(logs.join("transcript.jsonl"), "").unwrap();
+    fs::create_dir_all(store.join("brain/ide-only")).unwrap();
+    fs::write(store.join("brain/ide-only/task.md"), "Fixture plan").unwrap();
+    let conversations = store.join("conversations");
+    fs::create_dir_all(&conversations).unwrap();
+    fs::write(conversations.join("exported.pb"), "").unwrap();
+    fs::write(conversations.join("ide-only.pb"), "").unwrap();
+
+    let out = run(home, &["where"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stdout
+            .contains("1 .pb-only conversation(s) excluded (no JSONL transcript)"),
+        "{}",
+        out.stdout
+    );
+}

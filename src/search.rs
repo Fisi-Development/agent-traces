@@ -127,6 +127,10 @@ fn file_matches_multi_inner(
 ) -> std::result::Result<Vec<bool>, (Vec<bool>, std::io::Error)> {
     #[cfg(test)]
     PREFILTER_READS.with(|reads| *reads.borrow_mut().entry(path.to_path_buf()).or_default() += 1);
+    let full = (harness == "antigravity")
+        .then(|| crate::adapters::antigravity::full_transcript(path))
+        .flatten();
+    let path = full.as_deref().unwrap_or(path);
     let mut reader =
         crate::storage::jsonl::open(path).map_err(|error| (vec![false; queries.len()], error))?;
     let mut seen: Vec<_> = queries
@@ -356,7 +360,7 @@ pub fn prefilter_candidates_multi(
     let mut run = crate::index::Run::new(queries, scope);
     let file_groups: Vec<(String, Vec<String>)> = groups
         .iter()
-        .filter(|(h, _)| matches!(h.as_str(), "claude" | "codex" | "grok"))
+        .filter(|(h, _)| matches!(h.as_str(), "claude" | "codex" | "grok" | "antigravity"))
         .map(|(h, rs)| {
             (
                 h.clone(),
@@ -367,7 +371,7 @@ pub fn prefilter_candidates_multi(
     run.prepare(ctx, &file_groups, queries);
     let mut memo = HashMap::new();
     for (h, rs) in groups {
-        if matches!(h.as_str(), "claude" | "codex" | "grok") {
+        if matches!(h.as_str(), "claude" | "codex" | "grok" | "antigravity") {
             let mut missing = 0usize;
             for row in rs {
                 let p = s(&row, "path");
